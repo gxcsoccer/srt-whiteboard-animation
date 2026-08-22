@@ -1,0 +1,123 @@
+{
+  "$schema": "../../../annotation.schema.json",
+  "sceneId": "scene-03-homecoming",
+  "storyBasis": "奥德修斯伪装成乞丐观察宫殿，以旧弓和斧孔证明身份，夺回家园后通过夫妻共享的秘密与佩涅洛佩相认。",
+  "canvas": {
+    "width": 1672,
+    "height": 941
+  },
+  "sceneDurationMs": 30000,
+  "elements": [
+    {
+      "id": "beggar-return",
+      "label": "伪装成乞丐归来",
+      "sequence": 1,
+      "narrativeRole": "以门口的年迈乞丐形象交代奥德修斯秘密返回伊萨卡。",
+      "subtitle": "十年后，他终于回到伊萨卡，却先伪装成一个乞丐。",
+      "type": "return",
+      "region": {
+        "x": 35,
+        "y": 250,
+        "width": 190,
+        "height": 460
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 0,
+        "durationMs": 4500,
+        "maskPaddingPx": 16,
+        "protectedRegions": [
+          {
+            "x": 185,
+            "y": 400,
+            "width": 350,
+            "height": 325
+          }
+        ]
+      },
+      "handPath": {
+        "start": [130, 270],
+        "end": [130, 690],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "palace-suitors",
+      "label": "挥霍财富的求婚者",
+      "sequence": 2,
+      "narrativeRole": "呈现求婚者侵占宫殿、挥霍财富并逼迫佩涅洛佩改嫁的局面。",
+      "subtitle": "宫殿里，求婚者们正挥霍他的财富，逼迫妻子改嫁。",
+      "type": "conflict",
+      "region": {
+        "x": 185,
+        "y": 400,
+        "width": 350,
+        "height": 325
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 5000,
+        "durationMs": 4500,
+        "maskPaddingPx": 16,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [360, 420],
+        "end": [360, 705],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "bow-proof",
+      "label": "弯弓穿过十二斧孔",
+      "sequence": 3,
+      "narrativeRole": "用只有真正主人能够完成的弯弓挑战，完成奥德修斯身份的公开证明。",
+      "subtitle": "佩涅洛佩提出弯弓比赛，只有真正的主人能拉开那张弓。奥德修斯拿起旧弓，一箭穿过十二个斧孔，显露身份。",
+      "type": "proof",
+      "region": {
+        "x": 535,
+        "y": 230,
+        "width": 680,
+        "height": 500
+      },
+      "reveal": {
+        "direction": "left_to_right",
+        "startMs": 10000,
+        "durationMs": 9500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [555, 480],
+        "end": [1195, 480],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "penelope-reunion",
+      "label": "橄榄树床旁夫妻相认",
+      "sequence": 4,
+      "narrativeRole": "以夫妻共享的橄榄树床秘密完成最终辨认，象征家园、忠诚与身份的恢复。",
+      "subtitle": "他夺回家园，也通过只有夫妻知道的秘密认出了彼此。《奥德赛》讲述的不只是冒险，更是回家、忠诚与自我寻找。",
+      "type": "resolution",
+      "region": {
+        "x": 1230,
+        "y": 140,
+        "width": 440,
+        "height": 600
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 20000,
+        "durationMs": 9500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [1450, 160],
+        "end": [1450, 720],
+        "easing": "easeInOut"
+      }
+    }
+  ]
+}

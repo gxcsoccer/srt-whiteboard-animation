@@ -1,0 +1,123 @@
+{
+  "$schema": "../../../annotation.schema.json",
+  "sceneId": "scene-02-temptation",
+  "storyBasis": "奥德修斯依次面对喀耳刻、塞壬与恐怖海峡；每次诱惑和错误都消耗他的队伍，最终只剩他独自漂流。",
+  "canvas": {
+    "width": 1672,
+    "height": 941
+  },
+  "sceneDurationMs": 30000,
+  "elements": [
+    {
+      "id": "circe-island",
+      "label": "喀耳刻与变形的伙伴",
+      "sequence": 1,
+      "narrativeRole": "引出女巫喀耳刻的岛屿，以及伙伴被变成猪后又获救的第一场考验。",
+      "subtitle": "漫长航程中，他们又来到女巫喀耳刻的岛屿。伙伴被变成猪，奥德修斯设法让女巫恢复了他们。",
+      "type": "encounter",
+      "region": {
+        "x": 25,
+        "y": 270,
+        "width": 430,
+        "height": 430
+      },
+      "reveal": {
+        "direction": "left_to_right",
+        "startMs": 0,
+        "durationMs": 9500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [45, 470],
+        "end": [435, 470],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "sirens-mast",
+      "label": "绑在桅杆上抵抗塞壬",
+      "sequence": 2,
+      "narrativeRole": "表现奥德修斯主动约束自己，在塞壬歌声的诱惑中保持航向。",
+      "subtitle": "面对塞壬致命的歌声，他命人把自己绑在桅杆上。",
+      "type": "temptation",
+      "region": {
+        "x": 480,
+        "y": 145,
+        "width": 640,
+        "height": 625
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 10000,
+        "durationMs": 4500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [800, 165],
+        "end": [800, 750],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "strait-dangers",
+      "label": "海怪与漩涡",
+      "sequence": 3,
+      "narrativeRole": "用海怪和漩涡象征斯库拉与卡律布狄斯之间无法完全避开的危险。",
+      "subtitle": "船队还穿过斯库拉与卡律布狄斯之间的恐怖海峡。",
+      "type": "danger",
+      "region": {
+        "x": 1450,
+        "y": 395,
+        "width": 215,
+        "height": 330
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 15000,
+        "durationMs": 4500,
+        "maskPaddingPx": 16,
+        "protectedRegions": [
+          {
+            "x": 1125,
+            "y": 355,
+            "width": 355,
+            "height": 375
+          }
+        ]
+      },
+      "handPath": {
+        "start": [1555, 410],
+        "end": [1555, 705],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "lone-wreck",
+      "label": "失去伙伴后的独自漂流",
+      "sequence": 4,
+      "narrativeRole": "呈现失去船只与伙伴后的结果，奥德修斯成为唯一继续归乡的人。",
+      "subtitle": "每一次诱惑和错误，都让他失去更多伙伴与船只。最终，奥德修斯独自漂流，成为唯一活下来的归人。",
+      "type": "consequence",
+      "region": {
+        "x": 1125,
+        "y": 355,
+        "width": 355,
+        "height": 375
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 20000,
+        "durationMs": 9500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [1300, 375],
+        "end": [1300, 710],
+        "easing": "easeInOut"
+      }
+    }
+  ]
+}

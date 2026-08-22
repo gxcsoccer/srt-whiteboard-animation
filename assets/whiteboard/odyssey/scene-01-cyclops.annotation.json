@@ -1,0 +1,90 @@
+{
+  "$schema": "../../../annotation.schema.json",
+  "sceneId": "scene-01-cyclops",
+  "storyBasis": "奥德修斯的归乡航程被海神阻挠，他在独眼巨人洞穴遇险，最后让伙伴藏在羊腹下，以智慧逃脱。",
+  "canvas": {
+    "width": 1672,
+    "height": 941
+  },
+  "sceneDurationMs": 30000,
+  "elements": [
+    {
+      "id": "storm-voyage",
+      "label": "风浪中的归乡船",
+      "sequence": 1,
+      "narrativeRole": "交代特洛伊战争结束后的归乡目标，以及波塞冬令船队偏航的背景。",
+      "subtitle": "特洛伊战争结束后，希腊英雄奥德修斯终于踏上归乡之路。他一心想回到伊萨卡，见到妻子佩涅洛佩和儿子忒勒马科斯。然而海神波塞冬的愤怒，让船队一次次偏离航线。",
+      "type": "setting",
+      "region": {
+        "x": 1045,
+        "y": 540,
+        "width": 620,
+        "height": 350
+      },
+      "reveal": {
+        "direction": "left_to_right",
+        "startMs": 0,
+        "durationMs": 14500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [1065, 805],
+        "end": [1645, 650],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "cyclops-cave",
+      "label": "洞穴与受伤的独眼巨人",
+      "sequence": 2,
+      "narrativeRole": "呈现奥德修斯一行被困洞穴，并刺瞎独眼巨人后形成的核心危机。",
+      "subtitle": "在独眼巨人的洞穴里，奥德修斯和伙伴被困住了。他自称“无人”，灌醉巨人，并刺瞎巨人的独眼。",
+      "type": "conflict",
+      "region": {
+        "x": 820,
+        "y": 40,
+        "width": 845,
+        "height": 455
+      },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 15000,
+        "durationMs": 9500,
+        "maskPaddingPx": 20,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [1240, 55],
+        "end": [1240, 480],
+        "easing": "easeInOut"
+      }
+    },
+    {
+      "id": "sheep-escape",
+      "label": "藏在羊腹下逃脱",
+      "sequence": 3,
+      "narrativeRole": "以三名伙伴藏在羊腹下离开洞穴，完成智慧战胜蛮力的结果。",
+      "subtitle": "众人藏在羊腹下逃出洞穴，靠智慧战胜了蛮力。",
+      "type": "resolution",
+      "region": {
+        "x": 25,
+        "y": 455,
+        "width": 1040,
+        "height": 360
+      },
+      "reveal": {
+        "direction": "left_to_right",
+        "startMs": 25000,
+        "durationMs": 4500,
+        "maskPaddingPx": 18,
+        "protectedRegions": []
+      },
+      "handPath": {
+        "start": [45, 620],
+        "end": [1045, 620],
+        "easing": "easeInOut"
+      }
+    }
+  ]
+}
