@@ -139,10 +139,24 @@ const S = { scenes: [], idx: -1, cfg: null, cfgHandle: null, dirHandle: null,
 
 const els = () => S.cfg ? S.cfg.elements : [];
 const endMs = e => e.reveal.startMs + e.reveal.durationMs;
-function totalMs() {
-  const arr = els();
+const elementOrder = (a, b) => {
+  const as = a && Number.isInteger(a.sequence) ? a.sequence : Number.MAX_SAFE_INTEGER;
+  const bs = b && Number.isInteger(b.sequence) ? b.sequence : Number.MAX_SAFE_INTEGER;
+  const at = a && a.reveal && Number.isInteger(a.reveal.startMs) ? a.reveal.startMs : 0;
+  const bt = b && b.reveal && Number.isInteger(b.reveal.startMs) ? b.reveal.startMs : 0;
+  return as - bs || at - bt;
+};
+const orderedElements = cfg => (cfg && Array.isArray(cfg.elements) ? cfg.elements.slice().sort(elementOrder) : []);
+function scheduledTotalMsFor(cfg) {
+  const arr = orderedElements(cfg);
   const maxEnd = arr.length ? Math.max(...arr.map(endMs)) : 0;
-  return Math.max(S.cfg && S.cfg.sceneDurationMs || 0, maxEnd + 500, 1000);
+  return Math.max(maxEnd + 500, 1000);
+}
+function totalMsFor(cfg) {
+  return Math.max(cfg && cfg.sceneDurationMs || 0, scheduledTotalMsFor(cfg));
+}
+function totalMs() {
+  return totalMsFor(S.cfg);
 }
 
 // ---------- 打开文件夹 ----------
@@ -186,7 +200,7 @@ async function loadPairs(names, getFile, getHandle) {
   if (!scenes.length) { toast('目录里没有图片', true); return; }
   S.scenes = scenes; S.dirty.clear();
   const sel = $('sceneSel');
-  sel.innerHTML = scenes.map((s, i) => `<option value="${i}">${i+1}. ${s.name}${s.hasConfig ? '' : '（未标注）'}</option>`).join('');
+  sel.innerHTML = scenes.map((s, i) => `<option value="${i}">${i+1}. ${escapeHtml(s.name)}${s.hasConfig ? '' : '（未标注）'}</option>`).join('');
   sel.disabled = $('prevBtn').disabled = $('nextBtn').disabled = false;
   $('sceneCount').textContent = `共 ${scenes.length} 张（${scenes.filter(s=>s.hasConfig).length} 张带标注）`;
   $('hint').hidden = true; canvas.hidden = false; $('side').hidden = false;
@@ -210,6 +224,7 @@ function loadScene(i) {
     if (!sc.cfg) sc.cfg = { sceneId: sc.name, canvas: { width: img.naturalWidth, height: img.naturalHeight }, sceneDurationMs: 8000, elements: [] };
     if (!sc.cfg.canvas || !sc.cfg.canvas.width) sc.cfg.canvas = { width: img.naturalWidth, height: img.naturalHeight };
     if (!Array.isArray(sc.cfg.elements)) sc.cfg.elements = [];
+    sc.cfg.elements.sort(elementOrder);
     S.cfg = sc.cfg; S.cfgHandle = sc.cfgHandle;
     samplePaper();
     updateSaveBtns(); syncEditor(); renderList(); renderSubs(); setTime(0); // 默认停在 0（未播放）→ 显示完整图片
@@ -256,7 +271,7 @@ function render() {
     ctx.drawImage(S.source, 0, 0, w, h);
   } else {
     let active = null;
-    const ordered = arr.slice().sort((a, b) => a.reveal.startMs - b.reveal.startMs);
+    const ordered = orderedElements(S.cfg);
     mask.width = w; mask.height = h; maskCtx.clearRect(0, 0, w, h);
     ordered.forEach((e, index) => {
       const p = getProgress(S.time, e); if (!p) return;
@@ -322,8 +337,18 @@ function renderList() {
 }
 function reorder(from, to) {
   const arr = els(); if (from < 0 || to < 0 || from === to) return;
+  // 保留原编排的开场延迟与元素间间隔；移动元素后按新 sequence 重新串行排时。
+  const initialStart = arr.length ? Math.max(0, Math.round(+arr[0].reveal.startMs || 0)) : 0;
+  const gaps = arr.slice(0, -1).map((e, i) =>
+    Math.max(0, Math.round((+arr[i+1].reveal.startMs || 0) - endMs(e)))
+  );
   const [m] = arr.splice(from, 1); arr.splice(to, 0, m);
-  arr.forEach((e, i) => e.sequence = i + 1);       // 顺序即 sequence
+  let cursor = initialStart;
+  arr.forEach((e, i) => {
+    e.sequence = i + 1;
+    e.reveal.startMs = cursor;
+    cursor = endMs(e) + (gaps[i] === undefined ? 200 : gaps[i]);
+  });
   S.sel = to; markDirty(); syncEditor(); renderList(); renderSubs(); render();
 }
 
@@ -362,8 +387,10 @@ function applyEditor() {
   e.label = $('f_label').value || e.label;
   e.region.x = Math.max(0, Math.round(+$('f_x').value || 0));
   e.region.y = Math.max(0, Math.round(+$('f_y').value || 0));
-  e.region.width = Math.max(1, Math.round(+$('f_w').value || 1));
-  e.region.height = Math.max(1, Math.round(+$('f_h').value || 1));
+  const W = S.cfg.canvas.width, H = S.cfg.canvas.height;
+  e.region.x = Math.min(e.region.x, W - 1); e.region.y = Math.min(e.region.y, H - 1);
+  e.region.width = clamp(Math.round(+$('f_w').value || 1), 1, W - e.region.x);
+  e.region.height = clamp(Math.round(+$('f_h').value || 1), 1, H - e.region.y);
   e.reveal.direction = $('f_dir').value;
   let start = Math.max(0, Math.round(+$('f_start').value || 0));
   let end = Math.max(start + 100, Math.round(+$('f_end').value || 0));
@@ -444,8 +471,15 @@ $('saveBtn').addEventListener('click', () => saveScene(S.idx));
 $('saveAllBtn').addEventListener('click', async () => { for (const i of [...S.dirty]) await saveScene(i); });
 async function saveScene(i) {
   const sc = S.scenes[i];
-  // 保存前把总时长对齐到当前编排（最后一个区域结束 + 0.5s 凝视），供渲染器使用
-  if (i === S.idx && sc.cfg.elements && sc.cfg.elements.length) sc.cfg.sceneDurationMs = totalMs();
+  if (!sc.cfg || !Array.isArray(sc.cfg.elements) || sc.cfg.elements.some(e => !e || typeof e !== 'object')) {
+    toast('无法保存：elements 格式无效', true); return;
+  }
+  sc.cfg.elements.sort(elementOrder);
+  sc.cfg.elements.forEach((e, index) => e.sequence = index + 1);
+  // 保存前把每一幕（包括“全部保存”里的非当前幕）对齐到最后区域 + 0.5s。
+  if (sc.cfg.elements.length) sc.cfg.sceneDurationMs = scheduledTotalMsFor(sc.cfg);
+  const invalid = validateConfig(sc.cfg);
+  if (invalid) { toast('无法保存：' + invalid, true); return; }
   const text = JSON.stringify(sc.cfg, null, 2);
   try {
     let handle = sc.cfgHandle;
@@ -458,6 +492,22 @@ async function saveScene(i) {
     S.dirty.delete(i); if (i === S.idx) $('dirtyFlag').textContent = '';
     updateSaveBtns(); toast(`已保存：${sc.name}`);
   } catch (e) { toast(`保存失败：${e.message}`, true); }
+}
+function validateConfig(cfg) {
+  if (!cfg || !cfg.canvas || !Number.isInteger(cfg.canvas.width) || !Number.isInteger(cfg.canvas.height) || cfg.canvas.width <= 0 || cfg.canvas.height <= 0) return '画布尺寸无效';
+  const arr = orderedElements(cfg); let previousEnd = 0;
+  if (!arr.length) return '至少需要一个模块';
+  for (let i = 0; i < arr.length; i++) {
+    const e = arr[i], r = e.region, rv = e.reveal;
+    if (!r || !['x','y','width','height'].every(k => Number.isInteger(r[k])) ||
+        r.x < 0 || r.y < 0 || r.width <= 0 || r.height <= 0 ||
+        r.x + r.width > cfg.canvas.width || r.y + r.height > cfg.canvas.height) return `模块 ${i+1} 的区域超出画布`;
+    if (!rv || !Number.isInteger(rv.startMs) || !Number.isInteger(rv.durationMs) || rv.startMs < 0 || rv.durationMs <= 0) return `模块 ${i+1} 的时间无效`;
+    if (!['top_to_bottom','bottom_to_top','left_to_right','right_to_left'].includes(rv.direction)) return `模块 ${i+1} 的方向无效`;
+    if (rv.startMs < previousEnd) return `模块 ${i+1} 与前一模块时间重叠`;
+    previousEnd = rv.startMs + rv.durationMs;
+  }
+  return '';
 }
 function downloadText(name, text) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); URL.revokeObjectURL(a.href); }
 

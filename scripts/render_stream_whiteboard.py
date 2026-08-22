@@ -34,6 +34,7 @@ import numpy as np
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 import stream_render as sr  # noqa: E402
+from annotation_validation import ordered_elements, validate_annotation  # noqa: E402
 
 DEFAULT_HAND = _SCRIPT_DIR.parent / "assets" / "drawing-hand.png"
 
@@ -348,7 +349,9 @@ class RegionStreamRenderer:
     # ── 主渲染 ──
     def render_to(self, raw_path: Path, total_ms: int) -> Path:
         cfg = self.cfg
-        elements = sorted(self.ann["elements"], key=lambda e: e["reveal"]["startMs"])
+        # sequence 是叙事/遮罩的唯一顺序来源；startMs 只控制该元素何时开画。
+        # 预览台保存前会保证二者一致，CLI 校验负责拦截手写 JSON 的冲突。
+        elements = ordered_elements(self.ann["elements"])
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(raw_path), fourcc, cfg.fps, (self.out_w, self.out_h))
         if not writer.isOpened():
@@ -402,7 +405,7 @@ class RegionStreamRenderer:
                         self._lay_ink_grid(writer, ink_frames, samples, pen_lifts, sample_cell, path, allowed)
                         centers = [self._cell_center(c) for c in path]
                     else:
-                        self._lay_ink(writer, ink_frames, [], set(), None, allowed)
+                        self._lay_ink(writer, ink_frames, [], set(), allowed)
                         centers = []
 
                 cur_ms += ink_frames * ms_per_frame
@@ -511,6 +514,14 @@ def main(argv=None) -> int:
         return 1
     if not annotation.get("elements"):
         print("[err] 标注中没有 elements")
+        return 1
+    try:
+        validate_annotation(
+            annotation,
+            image_size=(int(image_bgr.shape[1]), int(image_bgr.shape[0])),
+        )
+    except ValueError as e:
+        print(f"[err] {e}")
         return 1
 
     total_ms = args.total_ms if args.total_ms is not None else annotation.get("sceneDurationMs")

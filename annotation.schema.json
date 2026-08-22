@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/geeklee/srt-whiteboard-animation/annotation.schema.json",
+  "title": "SRT Whiteboard Animation Annotation",
+  "type": "object",
+  "required": ["sceneId", "canvas", "sceneDurationMs", "elements"],
+  "properties": {
+    "sceneId": { "type": "string", "minLength": 1 },
+    "storyBasis": { "type": "string" },
+    "canvas": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "sceneDurationMs": { "type": "integer", "minimum": 1 },
+    "elements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/element" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "rect": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "point": {
+      "type": "array",
+      "prefixItems": [{ "type": "integer" }, { "type": "integer" }],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "element": {
+      "type": "object",
+      "required": ["id", "label", "sequence", "narrativeRole", "subtitle", "region", "reveal", "handPath"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "narrativeRole": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "type": { "type": "string" },
+        "region": { "$ref": "#/$defs/rect" },
+        "reveal": {
+          "type": "object",
+          "required": ["direction", "startMs", "durationMs", "protectedRegions"],
+          "properties": {
+            "direction": {
+              "enum": ["top_to_bottom", "bottom_to_top", "left_to_right", "right_to_left"]
+            },
+            "startMs": { "type": "integer", "minimum": 0 },
+            "durationMs": { "type": "integer", "minimum": 1 },
+            "maskPaddingPx": { "type": "integer", "minimum": 0 },
+            "protectedRegions": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/rect" }
+            }
+          },
+          "additionalProperties": true
+        },
+        "handPath": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {
+            "start": { "$ref": "#/$defs/point" },
+            "end": { "$ref": "#/$defs/point" },
+            "easing": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

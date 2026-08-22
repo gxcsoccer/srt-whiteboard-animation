@@ -1,6 +1,6 @@
 # SRT 白板动画 Skill
 
-将 SRT 字幕转为按叙事顺序绘制的白板手绘视频Skill。它结合了**分区遮罩编排**与**流式笔迹绘制**：每个元素跟随字幕依次出场，笔尖在区域内连续落墨，再逐步添彩，最终导出 MP4。
+将 SRT 字幕转为按叙事顺序绘制的白板手绘视频 Skill。它结合了**分区遮罩编排**与**流式笔迹绘制**：每个元素跟随字幕依次出场，笔尖在区域内连续落墨，再逐步添彩，最终导出无声 MP4 画面轨。
 
 适合把知识讲解、故事口播、课程字幕或短视频文案制作成暖米黄色纸张底的手绘动画。
 
@@ -43,14 +43,14 @@
 
 ## 安装与环境
 
-Skill 自带独立的 Python 虚拟环境准备脚本。首次运行时执行：
+需要 Python 3.11+。Skill 自带独立的 Python 虚拟环境准备脚本，并通过 `requirements.txt` 安装固定版本的直接依赖。首次运行时执行：
 
 ```bash
 python scripts/prepare_env.py --check
 python scripts/prepare_env.py
 ```
 
-成功后第一条命令会输出 `ENV_PY=<路径>`；后续渲染请使用该解释器，确保依赖隔离。
+已有环境时 `--check` 会验证依赖；首次运行通常需要执行第二条命令创建环境。成功命令末行会输出 `ENV_PY=<路径>`，后续渲染请使用该解释器。
 
 ## 项目素材结构
 
@@ -58,8 +58,7 @@ python scripts/prepare_env.py
 assets/whiteboard/<项目名>/
 ├── scene-01-<名称>.png
 ├── scene-01-<名称>.annotation.json
-├── scene-01-<名称>-whiteboard.mp4
-└── scene-01-<名称>-preview.mp4
+└── scene-01-<名称>-whiteboard.mp4
 ```
 
 图片与标注必须同名，例如 `scene-01-demo.png` 对应 `scene-01-demo.annotation.json`。
@@ -98,6 +97,8 @@ assets/whiteboard/<项目名>/
 
 `direction` 和 `handPath` 用于预览台的矩形代理；最终成片的真实笔迹由流式绘制器自动生成。对于相互遮挡的对象，在较早元素的 `protectedRegions` 中标出需要延后显示的区域，避免后续内容提前露出。
 
+仓库根目录的 [`annotation.schema.json`](annotation.schema.json) 可用于编辑器提示和外部校验；渲染 CLI 也会在开始写视频前检查画布尺寸、区域边界、`sequence` 连续性、时间重叠与结尾凝视时长。
+
 ## 常用命令
 
 解析字幕并生成建议分镜：
@@ -121,6 +122,8 @@ python scripts/render_annotation_preview.py <图片路径> <标注路径> <预�
   --ink-path grid --color-fill contour-wipe
 ```
 
+默认输出长边上限为 1080 像素；可用 `--cap-long-edge` 调整。这里的 MP4 仅包含白板动画画面，不会自动混入配音，也不会把 SRT 字幕烧录到画面。
+
 合并多幕：
 
 ```bash
@@ -132,6 +135,7 @@ python scripts/render_annotation_preview.py <图片路径> <标注路径> <预�
 - 首帧是干净的暖米黄纸张底色，没有提前露出的线条
 - `canvas` 与原图尺寸一致，所有区域都是画布内的整数像素坐标
 - `sequence`、`startMs` 与字幕的叙事顺序一致
+- 关键人物和物体在源图中可辨认、结构正确；若源图错误，应先重新生成源图而不是进入渲染
 - 中段帧中，未开始区域和保护区不会提前出现
 - 笔尖贴近当前流式笔迹；线稿清晰时可选择 `--ink-path skeleton`
 - 每幕结束后至少停留 0.5 秒完整画面；多幕合并顺序与字幕分镜一致
@@ -141,6 +145,8 @@ python scripts/render_annotation_preview.py <图片路径> <标注路径> <预�
 ```text
 srt-whiteboard-animation/
 ├── SKILL.md                         # 完整工作流与约束
+├── annotation.schema.json           # 标注格式 Schema
+├── requirements.txt                 # 固定版本的运行依赖
 ├── assets/
 │   ├── drawing-hand.png              # 手部素材
 │   ├── preview.html                  # 本地编辑预览台
@@ -149,10 +155,20 @@ srt-whiteboard-animation/
 │   ├── parse_srt.py                  # 字幕解析与分镜建议
 │   ├── render_annotation_preview.py  # 标注检查图
 │   ├── render_stream_whiteboard.py   # 流式笔迹 MP4 渲染器
+│   ├── stream_render.py              # 笔迹检测、轨迹与转码内核
+│   ├── annotation_validation.py      # 标注顺序与边界校验
 │   ├── merge_scenes.py               # 多幕合并
 │   └── prepare_env.py                # 依赖环境准备
+├── tests/                            # 单元与回归测试
 └── agents/openai.yaml                # Codex 元数据
 ```
+
+## 能力边界
+
+- `parse_srt.py` 只负责解析时间轴和按时长建议分幕；语义分镜、线稿生成与初始区域标注仍由 Agent 完成。
+- 渲染器对位图做墨迹检测和渐进揭示，不会恢复原画师的矢量笔画或真实落笔顺序。
+- 源图质量决定最终主体是否准确；渲染阶段只能改善呈现节奏，不能修复画错的对象。
+- 输出是无声视频轨。配音混音、背景音乐和字幕烧录需要在后续视频流程完成。
 
 ## 贡献
 

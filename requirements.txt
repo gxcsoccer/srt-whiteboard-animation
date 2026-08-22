@@ -1,0 +1,5 @@
+# Pinned direct runtime dependencies; CI exercises this set on supported Python versions.
+opencv-python==4.13.0.92
+numpy==2.4.4
+av==18.1.0
+Pillow==12.1.1

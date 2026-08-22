@@ -31,6 +31,7 @@ DEPS: dict[str, str] = {
     "av": "av",  # PyAV：纯 pip 安装的 H.264 编码，无需系统 ffmpeg
     "PIL": "Pillow",  # render_annotation_preview.py 画区域编号预览图（含中文标签）
 }
+REQUIREMENTS = SKILL_ROOT / "requirements.txt"
 
 
 def interpreter_path() -> Path:
@@ -69,7 +70,7 @@ def install(py: Path, packages: list[str]) -> bool:
         return True
     print(f"[..] 安装依赖: {', '.join(packages)}")
     res = subprocess.run(
-        [str(py), "-m", "pip", "install", "--quiet", *packages],
+        [str(py), "-m", "pip", "install", "--quiet", "-r", str(REQUIREMENTS)],
         capture_output=True,
         text=True,
     )
