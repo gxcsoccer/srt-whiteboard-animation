@@ -97,10 +97,11 @@ class RegionStreamRenderer:
         self.thresh_map = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10
         )
-        self.grid_blocks = sr._to_grid_blocks(self.thresh_map, cfg.grid_edge)
-        self.active_all = sr._active_mask(self.thresh_map, cfg.grid_edge, cfg.ink_threshold)
-        self.ink_pixels = self.thresh_map < cfg.ink_threshold
-        self.ink_paint = np.repeat(self.thresh_map[:, :, None], 3, axis=2).astype(np.float32)
+        self.ink_map, self.ink_cut = sr.build_ink_maps(self.thresh_map, gray, cfg)
+        self.grid_blocks = sr._to_grid_blocks(self.ink_map, cfg.grid_edge)
+        self.active_all = sr._active_mask(self.ink_map, cfg.grid_edge, self.ink_cut)
+        self.ink_pixels = self.ink_map < self.ink_cut
+        self.ink_paint = np.repeat(self.ink_map[:, :, None], 3, axis=2).astype(np.float32)
 
         # 背景染成画布底色，让上色阶段背景与起笔一致（不碰墨迹）
         if cfg.match_bg:
@@ -216,7 +217,7 @@ class RegionStreamRenderer:
         e = self.cfg.grid_edge
         block = self.grid_blocks[r, c]
         allow_block = allowed[r * e:r * e + e, c * e:c * e + e]
-        ink_region = (block < self.cfg.ink_threshold) & allow_block
+        ink_region = (block < self.ink_cut) & allow_block
         paint = np.repeat(block[:, :, None], 3, axis=2)
         target = self.drawn[r * e:r * e + e, c * e:c * e + e]
         target[ink_region] = paint[ink_region]
@@ -495,6 +496,9 @@ def _parse_args(argv=None):
     p.add_argument("--brush-radius", type=int, default=None)
     p.add_argument("--cap-long-edge", type=int, default=None,
                    help="输出长边像素上限（预览可调小加速，默认 1080）")
+    p.add_argument("--solid-ink-gray", type=int, default=None,
+                   help="实心墨块补偿：灰度低于该值的像素也算墨迹，"
+                        "让大面积实心黑（如小黑的身体）在起笔段就被填实；0=关闭（默认）")
     return p.parse_args(argv)
 
 
@@ -508,6 +512,8 @@ def _build_cfg(args) -> sr.Config:
         kw["brush_radius"] = args.brush_radius
     if args.cap_long_edge is not None:
         kw["cap_long_edge"] = args.cap_long_edge
+    if args.solid_ink_gray is not None:
+        kw["solid_ink_gray"] = args.solid_ink_gray
     kw["ink_path_mode"] = args.ink_path
     kw["color_fill"] = args.color_fill
     kw["pause_mode"] = args.pause

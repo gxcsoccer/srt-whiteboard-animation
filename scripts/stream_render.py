@@ -61,6 +61,11 @@ class Config:
     color_weight: int = 1          # 添彩段权重
     gaze_seconds: float = 3.0      # 凝视段基准秒数
     ink_threshold: int = 10        # 像素灰度低于此值视为“墨迹”
+    # 实心墨块补偿：adaptiveThreshold 会把大面积均匀黑块的内部判成背景（局部均值≈自身），
+    # 于是实心区域在起笔段只画出轮廓。>0 时把原图灰度低于该值的像素也算作墨迹，
+    # 落墨颜色取 min(阈值图, 灰度) —— 线条仍是纯黑，实心块用它自己的真实墨色。
+    # 默认 0（关闭）以保持既有画面不变；小黑等实心 IP 建议 90。
+    solid_ink_gray: int = 0
     ink_reveal_radius: int = 4     # 笔尖每段轨迹可揭示线稿的半径
     target_hand_height: int = 493  # 手部素材缩放后的目标高度（按 1080p 调校）
     # 笔尖在素材中的归一化坐标（0..1），决定落墨点对齐到素材的哪个像素。
@@ -133,6 +138,21 @@ def _active_mask(threshold_map: np.ndarray, edge: int, threshold: int) -> np.nda
     """哪些网格含墨迹：块内存在灰度低于阈值的像素即为真。"""
     blocks = _to_grid_blocks(threshold_map, edge)
     return np.any(blocks < threshold, axis=(2, 3))
+
+
+def build_ink_maps(
+    thresh_map: np.ndarray, gray: np.ndarray, cfg: Config
+) -> tuple[np.ndarray, int]:
+    """
+    返回 (ink_map, ink_cut)：ink_map 是落墨取色用的灰度图，ink_cut 是「算墨迹」的阈值。
+
+    cfg.solid_ink_gray == 0（默认）时原样返回阈值图与 ink_threshold，行为与旧版一致。
+    >0 时把实心黑块也纳入墨迹：ink_map = min(阈值图, 原图灰度)，线条处仍为 0（纯黑），
+    实心区域取自身灰度，从而既能被判定为墨迹、又能画出真实墨色。
+    """
+    if cfg.solid_ink_gray > 0:
+        return np.minimum(thresh_map, gray), max(cfg.ink_threshold, cfg.solid_ink_gray)
+    return thresh_map, cfg.ink_threshold
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1023,10 +1043,11 @@ class StreamBoardRenderer:
         self.thresh_map = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10
         )
-        self.active = _active_mask(self.thresh_map, cfg.grid_edge, cfg.ink_threshold)
-        self.grid_blocks = _to_grid_blocks(self.thresh_map, cfg.grid_edge)
-        self.ink_pixels = self.thresh_map < cfg.ink_threshold
-        self.ink_paint = np.repeat(self.thresh_map[:, :, None], 3, axis=2).astype(np.float32)
+        self.ink_map, self.ink_cut = build_ink_maps(self.thresh_map, gray, cfg)
+        self.active = _active_mask(self.ink_map, cfg.grid_edge, self.ink_cut)
+        self.grid_blocks = _to_grid_blocks(self.ink_map, cfg.grid_edge)
+        self.ink_pixels = self.ink_map < self.ink_cut
+        self.ink_paint = np.repeat(self.ink_map[:, :, None], 3, axis=2).astype(np.float32)
 
         # 把原图背景染成画布底色（仅影响 color_img，不碰 ink_pixels / ink_paint）。
         # 这样上色/凝视阶段的背景与起笔(线稿)阶段一致，避免背景色突兀跳变。
@@ -1184,7 +1205,7 @@ class StreamBoardRenderer:
         r, c = cell
         e = self.cfg.grid_edge
         block = self.grid_blocks[r, c]
-        ink_region = block < self.cfg.ink_threshold
+        ink_region = block < self.ink_cut
         # 阈值图是单通道，复制到三通道画布
         paint = np.repeat(block[:, :, None], 3, axis=2)
         target = self.drawn[r * e:r * e + e, c * e:c * e + e]
@@ -1722,6 +1743,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="起笔段停顿节奏: heavy 明显(默认); auto 按密度自动分档; off 关闭; light 少量",
     )
     p.add_argument(
+        "--solid-ink-gray", type=int, default=None,
+        help="实心墨块补偿：灰度低于该值的像素也算墨迹 (0=关闭，默认；实心 IP 建议 90)",
+    )
+    p.add_argument(
         "--ink-path", default="grid", choices=["grid", "skeleton"],
         help="起笔段笔迹路径: grid 网格格中心插值(默认); skeleton 骨架级像素追踪(更精准贴合线条)",
     )
@@ -1748,6 +1773,8 @@ def _build_cfg(args: argparse.Namespace) -> Config:
         kw["pause_mode"] = args.pause
     if args.ink_path is not None:
         kw["ink_path_mode"] = args.ink_path
+    if args.solid_ink_gray is not None:
+        kw["solid_ink_gray"] = args.solid_ink_gray
     return Config(**kw)
 
 

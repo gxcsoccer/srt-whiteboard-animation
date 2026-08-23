@@ -2,6 +2,10 @@
 
 将 SRT 字幕转为按叙事顺序绘制的白板手绘视频Skill。它结合了**分区遮罩编排**与**流式笔迹绘制**：每个元素跟随字幕依次出场，笔尖在区域内连续落墨，再逐步添彩，最终导出 MP4。
 
+线稿的默认视觉语言是**小黑 IP**（暖黄纸底、黑色手绘线、小黑承担核心动作、画面内无文字），
+来自 [ian-xiaohei-illustrations](https://github.com/helloianneo/ian-xiaohei-illustrations)（作者 Ian，MIT），
+已作为风格包收录在 [`styles/ian-xiaohei/`](styles/ian-xiaohei/README.md)。
+
 适合把知识讲解、故事口播、课程字幕或短视频文案制作成暖米黄色纸张底的手绘动画。
 
 ## 效果示例
@@ -16,6 +20,8 @@
 
 - 解析 SRT 字幕，并按建议的 25–35 秒时长拆分场景
 - 先输出分镜与配图策略，确保每一幕只表达一个核心意思
+- 线稿统一用小黑 IP：小黑必须承担核心动作，一幕只讲一个结构，画面内不写字
+- 提供小黑风格包（风格 DNA、IP 设定、构图模式、提示词模板、QA 清单）
 - 按字幕事件而非画面坐标，为元素建立语义化的绘制顺序
 - 用 `annotation.json` 管理区域、时序、字幕关联和重叠保护区
 - 每个区域采用连续流式笔迹：先 `ink` 铺线稿，再 `color` 添彩
@@ -34,12 +40,20 @@
 6. 确认最终标注后，逐幕渲染 MP4。
 7. 多幕项目在确认各幕成片后合并。
 
-## 视觉规范
+## 视觉规范（小黑风格包）
 
-- 暖米黄色纸张背景：出图用 `#F5EBD7`；渲染时画布底色为 `#F6F1E3`（`stream_render.py` 的 `Config.canvas_hex`），渲染器会把原图中接近背景的像素统一涂成该底色，使起笔阶段与上色阶段的背景一致
-- 深灰色素描线条，红、橙、蓝仅作少量概念性点缀
-- 极简手绘、干净背景与充足留白
-- 不使用场景文字、标签、摄影感、3D 效果或复杂纹理
+完整规范见 [`styles/ian-xiaohei/README.md`](styles/ian-xiaohei/README.md)，出图请直接套用
+[`whiteboard-prompt-template.md`](styles/ian-xiaohei/whiteboard-prompt-template.md)：
+
+- **小黑必须出现且承担核心动作**：黑色实心身体、白圆点眼、细腿、空表情、手绘不规则轮廓；只当装饰就要重画
+- 暖米黄色纸张背景：出图用 `#F5EBD7`（**不是纯白**）；渲染时画布底色为 `#F6F1E3`（`stream_render.py` 的 `Config.canvas_hex`），渲染器会把原图中接近背景的像素统一涂成该底色，使起笔阶段与上色阶段的背景一致
+- 黑色手绘线条；红、橙、蓝仅作**非文字**的少量点缀（橙=主路径箭头，红=关键问题或结果，蓝=补充或系统状态）
+- 极简手绘、一图一结构、干净背景与充足留白（主体约占 40%–60%，至少留 35% 空白）
+- 主体之间留出可分区的空白走廊，四角保持干净纸底，主体数量对齐该幕字幕事件数
+- **画面内不得有任何文字**（含中文手写批注）；不使用摄影感、3D 效果、复杂纹理、PPT 信息图、正式流程图或可爱卡通
+
+小黑的实心黑身体在起笔阶段可能只勾出轮廓、到添彩阶段才填实；想让起笔阶段就填实，渲染时加 `--solid-ink-gray 90`。
+含大面积实心黑的画面不要用 `--ink-path skeleton`（骨架追踪只沿中轴线揭示，实心区域会留空）。
 
 ## 安装与环境
 
@@ -144,10 +158,11 @@ python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 
 ## 质量检查
 
 - 首帧是干净的暖米黄纸张底色，没有提前露出的线条
+- 每幕都有小黑且承担核心动作；画面内没有任何文字（含手写批注）
 - `canvas` 与原图尺寸一致，所有区域都是画布内的整数像素坐标
 - `sequence`、`startMs` 与字幕的叙事顺序一致
 - 中段帧中，未开始区域和保护区不会提前出现
-- 笔尖贴近当前流式笔迹；线稿清晰时可选择 `--ink-path skeleton`
+- 笔尖贴近当前流式笔迹；线稿清晰、且没有大面积实心黑时才可选择 `--ink-path skeleton`
 - 每幕结束后至少停留 0.5 秒完整画面；多幕合并顺序与字幕分镜一致
 
 ## 仓库内容
@@ -168,6 +183,11 @@ srt-whiteboard-animation/
 │   ├── stream_render.py              # 画法层引擎：骨架/网格笔迹、上色、转码
 │   ├── merge_scenes.py               # 多幕合并
 │   └── prepare_env.py                # 依赖环境准备
+├── styles/ian-xiaohei/               # 小黑风格包（vendored，MIT，作者 Ian）
+│   ├── README.md                     # 风格包说明与覆盖规则
+│   ├── whiteboard-prompt-template.md # 融合后的出图提示词模板
+│   ├── references/                   # 风格 DNA / IP 设定 / 构图模式 / QA 清单
+│   ├── LICENSE, NOTICE.md            # 上游许可与署名
 ├── tests/                            # pytest + node 的回归测试
 └── agents/openai.yaml                # Codex 元数据
 ```
@@ -184,6 +204,14 @@ node tests/preview_html.test.mjs # 预览台逻辑（可选，需 node）
 ## 贡献
 
 欢迎提交 Issue 或 Pull Request。任何涉及绘制逻辑的改动，都应使用真实的字幕、标注和成片检查遮罩保护、时序与最终画面。
+
+## 致谢与第三方内容
+
+线稿阶段的视觉语言来自 [ian-xiaohei-illustrations](https://github.com/helloianneo/ian-xiaohei-illustrations)（作者
+[Ian](https://github.com/helloianneo)，MIT）。本仓库以风格包形式收录了其 `references/` 参考文档，
+并针对白板动画管线做了三处覆盖（纸底改暖黄、画面禁止文字、保留确认关卡）。
+署名、vendoring 范围与改动说明见 [`styles/ian-xiaohei/NOTICE.md`](styles/ian-xiaohei/NOTICE.md)，
+上游许可见 [`styles/ian-xiaohei/LICENSE`](styles/ian-xiaohei/LICENSE)。角色「小黑」是 Ian 视觉语言的一部分。
 
 ## 许可证
 
