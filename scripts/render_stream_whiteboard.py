@@ -21,8 +21,6 @@ SRT 白板动画 - 整合渲染器（mask 编排 + stream 画法）
 from __future__ import annotations
 
 import argparse
-import datetime
-import json
 import math
 import sys
 from pathlib import Path
@@ -34,6 +32,12 @@ import numpy as np
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 import stream_render as sr  # noqa: E402
+from annotation_schema import (  # noqa: E402
+    AnnotationError,
+    ensure_valid,
+    load_annotation,
+    print_report,
+)
 
 DEFAULT_HAND = _SCRIPT_DIR.parent / "assets" / "drawing-hand.png"
 
@@ -138,6 +142,22 @@ class RegionStreamRenderer:
             self.tip.stamp(snap, px, py)
         return snap
 
+    def _park_tip(self, allowed: np.ndarray | None) -> tuple[int, int]:
+        """区域内无事可画时笔尖停哪：优先允许掩码的中心，否则画布中心。"""
+        if allowed is not None and allowed.any():
+            ys, xs = np.where(allowed)
+            return int((xs.min() + xs.max()) // 2), int((ys.min() + ys.max()) // 2)
+        return self.out_w // 2, self.out_h // 2
+
+    def _hold(self, writer, frames: int, allowed: np.ndarray | None) -> None:
+        """占位帧：内容没变，但必须写满帧数，否则后续区域的时间轴会整体前移。"""
+        if frames <= 0:
+            return
+        px, py = self._park_tip(allowed)
+        snap = self._snapshot_with_tip(px, py)
+        for _ in range(frames):
+            writer.write(snap)
+
     # ── 单区域的允许掩码：矩形 - 后续区域 - protectedRegions ──
     def _allowed_mask(self, element: dict, later_elements: list[dict]) -> np.ndarray:
         mask = np.zeros((self.out_h, self.out_w), dtype=bool)
@@ -224,8 +244,7 @@ class RegionStreamRenderer:
             return
         n = len(samples)
         if n == 0:
-            for _ in range(frames):
-                writer.write(self._snapshot_with_tip(self.out_w // 2, self.out_h // 2))
+            self._hold(writer, frames, allowed)
             return
         idx_for_frame = _frame_progress_indices(n, frames)
         last: int | None = None
@@ -247,8 +266,7 @@ class RegionStreamRenderer:
             return
         n = len(centers)
         if n == 0:
-            for _ in range(frames):
-                writer.write(self._snapshot_with_tip(self.out_w // 2, self.out_h // 2))
+            self._hold(writer, frames, allowed)
             return
         disk = sr._feathered_disk(self.cfg.brush_radius)
         idx_for_frame = _frame_progress_indices(n, frames)
@@ -269,6 +287,8 @@ class RegionStreamRenderer:
         cfg = self.cfg
         ys_all, xs_all = np.where(allowed)
         if ys_all.size == 0:
+            # 允许掩码为空：没有可上色的像素，但帧数必须照写，否则时间轴前移
+            self._hold(writer, frames, allowed)
             return
         top, bottom = int(ys_all.min()), int(ys_all.max())
         left, right = int(xs_all.min()), int(xs_all.max())
@@ -402,7 +422,9 @@ class RegionStreamRenderer:
                         self._lay_ink_grid(writer, ink_frames, samples, pen_lifts, sample_cell, path, allowed)
                         centers = [self._cell_center(c) for c in path]
                     else:
-                        self._lay_ink(writer, ink_frames, [], set(), None, allowed)
+                        # 允许掩码内没有墨迹（空白区域，或被后续区域/保护区完全盖住）：
+                        # 仍要占满该区域的起笔帧数，保持时间轴对齐。
+                        self._lay_ink(writer, ink_frames, [], set(), allowed)
                         centers = []
 
                 cur_ms += ink_frames * ms_per_frame
@@ -504,14 +526,20 @@ def main(argv=None) -> int:
     if image_bgr is None:
         print(f"[err] 无法读取图片: {args.image}")
         return 1
+
+    # 渲染前校验标注：把「缺字段崩渲染」「区域越界被静默裁掉」这类问题
+    # 在开始编码之前一次列清，而不是渲染到一半抛 KeyError。
+    image_h, image_w = image_bgr.shape[:2]
     try:
-        annotation = json.loads(Path(args.annotation).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"[err] 无法读取标注: {e}")
+        annotation = load_annotation(args.annotation)
+        report = ensure_valid(
+            annotation, image_size=(image_w, image_h), source=Path(args.annotation).name
+        )
+    except AnnotationError as e:
+        print(f"[err] {e}")
+        print("\n提示：可单独运行 `python scripts/annotation_schema.py <标注.json> <图片>` 复查。")
         return 1
-    if not annotation.get("elements"):
-        print("[err] 标注中没有 elements")
-        return 1
+    print_report(report, Path(args.annotation).name)
 
     total_ms = args.total_ms if args.total_ms is not None else annotation.get("sceneDurationMs")
     if not total_ms:

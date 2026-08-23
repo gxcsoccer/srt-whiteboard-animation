@@ -36,7 +36,7 @@
 
 ## 视觉规范
 
-- 暖米黄色纸张背景：建议 `#F5EBD7`
+- 暖米黄色纸张背景：出图用 `#F5EBD7`；渲染时画布底色为 `#F6F1E3`（`stream_render.py` 的 `Config.canvas_hex`），渲染器会把原图中接近背景的像素统一涂成该底色，使起笔阶段与上色阶段的背景一致
 - 深灰色素描线条，红、橙、蓝仅作少量概念性点缀
 - 极简手绘、干净背景与充足留白
 - 不使用场景文字、标签、摄影感、3D 效果或复杂纹理
@@ -50,7 +50,9 @@ python scripts/prepare_env.py --check
 python scripts/prepare_env.py
 ```
 
-成功后第一条命令会输出 `ENV_PY=<路径>`；后续渲染请使用该解释器，确保依赖隔离。
+依赖及其版本范围记在 `requirements.txt`（`prepare_env.py` 会按它安装）。依赖齐全时 `--check` 末行输出 `ENV_PY=<路径>`；缺依赖时它以非零码退出，直接运行不带 `--check` 的命令补齐即可。
+
+除 `parse_srt.py`（纯标准库）外，其余脚本都请用 `<ENV_PY>` 运行——`render_annotation_preview.py` 需要 Pillow，渲染需要 opencv/numpy，它们只装在 `.venv` 里。
 
 ## 项目素材结构
 
@@ -98,6 +100,16 @@ assets/whiteboard/<项目名>/
 
 `direction` 和 `handPath` 用于预览台的矩形代理；最终成片的真实笔迹由流式绘制器自动生成。对于相互遮挡的对象，在较早元素的 `protectedRegions` 中标出需要延后显示的区域，避免后续内容提前露出。
 
+字段说明与已知取舍：
+
+- **绘制顺序只看 `reveal.startMs`。** 渲染器按 `startMs` 排序，`sequence` 只是给人和预览台看的编号，不影响成片。因此在预览台拖动列表调整顺序后，**必须一并调整开始/结束时间**，否则成片顺序不变。两者不一致时校验器会给出提醒。
+- **`maskPaddingPx` 目前是保留字段**，渲染器与预览台都不读取它，可以照抄默认值。
+- 渲染前建议先跑一遍校验（缺字段、区域越界、时间窗重叠都会指出来）：
+
+```bash
+python scripts/annotation_schema.py <标注路径> [图片路径]
+```
+
 ## 常用命令
 
 解析字幕并生成建议分镜：
@@ -106,10 +118,10 @@ assets/whiteboard/<项目名>/
 python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
 ```
 
-生成区域检查图：
+生成区域检查图（字体自动探测 Windows / macOS / Linux 常见中文字体，也可用 `--font` 或环境变量 `SRT_WB_FONT` 指定）：
 
 ```bash
-python scripts/render_annotation_preview.py <图片路径> <标注路径> <预览图输出路径>
+<ENV_PY> scripts/render_annotation_preview.py <图片路径> <标注路径> <预览图输出路径> [--font 字体文件]
 ```
 
 打开 `assets/preview.html`，使用“打开文件夹”载入场景目录，即可编辑区域、顺序、时间与字幕关联。
@@ -120,6 +132,8 @@ python scripts/render_annotation_preview.py <图片路径> <标注路径> <预�
 <ENV_PY> scripts/render_stream_whiteboard.py <图片路径> <标注路径> <输出.mp4> assets/drawing-hand.png \
   --ink-path grid --color-fill contour-wipe
 ```
+
+成片长度由各区域的 `startMs + durationMs` 累加决定：`--total-ms`（缺省取 `sceneDurationMs`）只用于在画完之后补足凝视时长，**只能延长、不能缩短**。要缩短成片，请改区域时序。`--pause` 在逐区域画法下不生效（保留参数，仅整图模式 `stream_render.py` 使用）。
 
 合并多幕：
 
@@ -141,17 +155,30 @@ python scripts/render_annotation_preview.py <图片路径> <标注路径> <预�
 ```text
 srt-whiteboard-animation/
 ├── SKILL.md                         # 完整工作流与约束
+├── requirements.txt                  # 渲染链依赖及版本范围
 ├── assets/
 │   ├── drawing-hand.png              # 手部素材
 │   ├── preview.html                  # 本地编辑预览台
 ├── examples/                         # README 案例素材
 ├── scripts/
 │   ├── parse_srt.py                  # 字幕解析与分镜建议
+│   ├── annotation_schema.py          # 标注校验（渲染前自动执行，也可单独跑）
 │   ├── render_annotation_preview.py  # 标注检查图
-│   ├── render_stream_whiteboard.py   # 流式笔迹 MP4 渲染器
+│   ├── render_stream_whiteboard.py   # 编排层：分区遮罩 + 时序，输出单幕 MP4
+│   ├── stream_render.py              # 画法层引擎：骨架/网格笔迹、上色、转码
 │   ├── merge_scenes.py               # 多幕合并
 │   └── prepare_env.py                # 依赖环境准备
+├── tests/                            # pytest + node 的回归测试
 └── agents/openai.yaml                # Codex 元数据
+```
+
+`render_stream_whiteboard.py` 负责「按字幕分区、按时序揭示」，真正的笔迹生成、上色与 H.264 转码都在 `stream_render.py` 里（它也可作为独立 CLI 把单张图渲染成整图流式动画）。
+
+跑测试：
+
+```bash
+<ENV_PY> -m pytest tests/ -q     # 需要 pytest；无 opencv 的环境会自动跳过渲染用例
+node tests/preview_html.test.mjs # 预览台逻辑（可选，需 node）
 ```
 
 ## 贡献

@@ -67,9 +67,16 @@ def can_import(py: Path, import_name: str) -> bool:
 def install(py: Path, packages: list[str]) -> bool:
     if not packages:
         return True
-    print(f"[..] 安装依赖: {', '.join(packages)}")
+    # 有 requirements.txt 就按它安装（版本上界在那里统一维护），否则退回包名
+    requirements = SKILL_ROOT / "requirements.txt"
+    if requirements.exists():
+        print(f"[..] 按 {requirements.name} 安装依赖 (缺: {', '.join(packages)})")
+        args = ["-r", str(requirements)]
+    else:
+        print(f"[..] 安装依赖: {', '.join(packages)}")
+        args = list(packages)
     res = subprocess.run(
-        [str(py), "-m", "pip", "install", "--quiet", *packages],
+        [str(py), "-m", "pip", "install", "--quiet", *args],
         capture_output=True,
         text=True,
     )

@@ -13,7 +13,7 @@ description: 将 SRT 字幕做成暖米黄纸张底的白板手绘动画：读�
 
 | 项目 | 默认要求 |
 |---|---|
-| 纸张背景 | 生成图使用暖米黄旧纸色（建议 `#F5EBD7`）；渲染时从原图距四角内缩取样染底，禁止纯白。 |
+| 纸张背景 | 生成图使用暖米黄旧纸色（建议 `#F5EBD7`），禁止纯白。渲染器采样原图四角识别背景色，再把接近背景的像素统一涂成画布底色 `#F6F1E3`（`stream_render.Config.canvas_hex`），使起笔段与上色段的底色一致。 |
 | 画法 | 每区域 stream 连续笔迹：起笔 `ink`（铺线稿）→ 添彩 `color`（还原原色）；权重 `ink:color = 2:1`。 |
 | 笔迹路径 | `--ink-path grid`（网格，默认，稳）或 `skeleton`（骨架追踪，线稿清晰的插画更贴合）。 |
 | 上色风格 | `--color-fill contour-wipe`（轮廓扫描，默认）或 `brush`（沿轨迹刷）。 |
@@ -43,7 +43,7 @@ description: 将 SRT 字幕做成暖米黄纸张底的白板手绘动画：读�
 2. **生成线稿。** 仅在用户确认策略后，按“统一出图视觉规范”逐幕生成 16:9 暖米黄旧纸张底线稿图，背景 `#F5EBD7`，主体之间保留充足留白便于自动拆分；不得生成文字、复杂照片、重叠对象或与规范冲突的元素。**完成后停止，展示线稿并等待用户确认。**
 3. **先读字幕再看图，然后标注并打开预览台。** 仅在用户确认线稿后，先阅读该图对应的字幕、再实际查看图片、并获取原图像素宽高；不得只凭字幕臆测画面，也不得只按画面位置机械排序。先提炼字幕叙事事件，再把图中可见主体对应到事件，按“场景铺垫 → 关键人物/物体 → 动作冲突或变化 → 反应/结果”的语义顺序安排绘制。随后创建 `<图片名>.annotation.json`。创建完成后，立即用默认浏览器打开 `assets/preview.html`，并通过预览台的“打开文件夹”载入**该标注文件所在目录**的全部 `<名称>.png` + `<名称>.annotation.json`；不得只给出文件路径或要求用户自行操作。**预览台已带入目录后停止，等待用户确认标注与预览内容。**
 4. **生成区域预览图。** 仅在用户确认标注与预览内容后，用 `render_annotation_preview.py` 出编号/方向检查图，核对分区与叙事顺序一致、区域都在画布内、重叠主体用 `protectedRegions` 保护。**完成后停止，等待用户确认预览图。**
-5. **在预览台调整并保存。** 仅在用户确认预览图后，在已打开且已载入对应目录的预览台调整：默认（未播放）显示完整图片和区域框；画布是**矩形代理**：拖区域四边四角改 `region`，右侧改名称/方向/**开始(ms)/结束(ms)**（时长= 结束−开始，只读）与**字幕**，拖动模块列表**调整顺序**（自动重排 `sequence`），选中模块自动高亮对应字幕；拖时间轴或按播放看揭示（未开始区域不显示）；`direction` 只影响此代理。改完点“保存本场景/全部保存”写回原 `.annotation.json`（含每区域 `subtitle`，并把 `sceneDurationMs` 对齐到最后区域结束+0.5s）。**保存后停止，等待用户确认最终标注与时序。**
+5. **在预览台调整并保存。** 仅在用户确认预览图后，在已打开且已载入对应目录的预览台调整：默认（未播放）显示完整图片和区域框；画布是**矩形代理**：拖区域四边四角改 `region`，右侧改名称/方向/**开始(ms)/结束(ms)**（时长= 结束−开始，只读）与**字幕**，拖动模块列表**调整顺序**（自动重排 `sequence`；因为成片顺序只看 `startMs`，拖完必须同步改开始/结束时间才会生效），选中模块自动高亮对应字幕；拖时间轴或按播放看揭示（未开始区域不显示）；`direction` 只影响此代理。改完点“保存本场景/全部保存”写回原 `.annotation.json`（含每区域 `subtitle`；每个待保存场景的 `sceneDurationMs` 都会对齐到该场景最后区域结束+0.5s，可增可减）。**保存后停止，等待用户确认最终标注与时序。**
 6. **命令行渲染成片。** 仅在用户确认最终标注与时序后，用 `render_stream_whiteboard.py` 逐幕出全清 MP4，抽查开场、任意重叠模块中段、结尾三个时间点。**完成后停止，等待用户确认成片。**
 7. **多幕合并（仅适用于多幕）。** 仅在用户确认所有单幕成片后，用 `merge_scenes.py` 按顺序合并成一条。**完成后停止，等待用户确认最终合成视频。**
 
@@ -71,7 +71,8 @@ assets/whiteboard/<项目名>/
 
 ## 时序模型（stream 画法专用）
 
-- **每幕总时长** `sceneDurationMs` 来自该幕字幕时间跨度（`parse_srt.py` 的 `scenes[].sceneDurationMs`）。
+- **绘制顺序的唯一依据是 `reveal.startMs`。** 渲染器按 `startMs` 排序处理区域；`sequence` 只是标注编号，不影响成片。因此在预览台调整顺序后必须同时改开始/结束时间，否则成片顺序不变。`annotation_schema.py` 会在两者不一致时给出提醒。
+- **每幕总时长** `sceneDurationMs` 来自该幕字幕时间跨度（`parse_srt.py` 的 `scenes[].sceneDurationMs`）。成片实际长度由各区域 `startMs + durationMs` 累加决定；`sceneDurationMs` 与 `--total-ms` 只用于在画完后补足凝视，**只能延长、不能缩短**。要缩短成片必须改区域时序。预览台保存时会把 `sceneDurationMs` 对齐为「最后区域结束 + 0.5s」（可增可减）。
 - **区域串行作画：** stream 画法是一支笔在动，同一幕内各区域应**在时间上依次进行**（`startMs` 不重叠）：下一区域从上一区域 `startMs + durationMs`（+ 可选 100–300ms 呼吸）开始。若 `startMs` 重叠，渲染器仍按顺序处理，但视觉上不再是并发。
 - **区域内 ink→color：** 每个区域的 `durationMs` 会按 `ink:color = 2:1` 切成起笔段和添彩段。`durationMs` 由预览台的**开始/结束时间**决定（结束−开始），可对齐该区域对应字幕的时长；也可用 150 像素/秒 × 绘制距离作为初始估算。
 - **凝视收尾：** 全部区域画完后自动补到 `sceneDurationMs`，并保证结尾至少停留 0.5 秒完整原图。
@@ -82,6 +83,8 @@ assets/whiteboard/<项目名>/
 - 在时间 `t`，模块仅可显示其 `reveal.startMs ≤ t` 之后、且不超过当前作画进度的像素；未开始模块的任何线条/填充/图像都不得出现。
 - 每个区域的**允许掩码** = 矩形 `region` 扣除全部**后续模块的 `region`**，再扣除本模块 `reveal.protectedRegions`。stream 落墨被限制在允许掩码内，因此后续区域不会提前露线。
 - `protectedRegions` 采用与 `region` 相同的原图整数像素坐标，用于矩形过大、主体交叠或背景线条可能泄露的情况。
+- `maskPaddingPx` 是保留字段，渲染器与预览台都不读取它；照抄默认值即可，不要指望它改变遮罩边界。
+- 不在任何 `region` 内的墨迹全程不会被画出来，只在结尾凝视段随完整原图一次性出现。若发现有主体"最后才突然冒出"，说明区域没盖住它，应扩大对应 `region`。
 - 渲染器已实现"限制在允许掩码内落墨 → 后续区域与保护区天然不被触碰"的顺序；预览台矩形代理用等价的 `destination-out` 扣除演示同一编排。
 
 ## 配置示例
@@ -116,24 +119,28 @@ assets/whiteboard/<项目名>/
 
 1. **准备环境**（首次或缺依赖时）：
    ```bash
-   python scripts/prepare_env.py --check   # 探测；成功末行输出 ENV_PY=<路径>，捕获备用
-   python scripts/prepare_env.py           # 缺则建 .venv 并装 opencv-python/numpy/av
+   python scripts/prepare_env.py --check   # 探测；依赖齐全时末行输出 ENV_PY=<路径>，捕获备用
+   python scripts/prepare_env.py           # 缺则建 .venv 并按 requirements.txt 安装
    ```
+   除 `parse_srt.py` 与 `annotation_schema.py`（纯标准库）外，其余脚本都必须用 `<ENV_PY>` 运行。
 2. **解析字幕 + 建议分镜**：
    ```bash
    python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
    ```
-3. **区域编号预览图**：
+   `--min-sec` / `--max-sec` 是软约束：末幕可能短于 min，单条本身超过 max 的字幕不会被切开，需要人工复核分镜。
+3. **校验标注 + 区域编号预览图**：
    ```bash
-   python scripts/render_annotation_preview.py <图片> <标注> <预览图输出>
+   python scripts/annotation_schema.py <标注> <图片>          # 缺字段/越界/时序问题一次列清
+   <ENV_PY> scripts/render_annotation_preview.py <图片> <标注> <预览图输出> [--font 字体文件]
    ```
+   预览图脚本会自动探测 Windows / macOS / Linux 的常见中文字体；找不到时用 `--font` 或环境变量 `SRT_WB_FONT` 指定。渲染器在开始编码前也会自动跑同一套校验，校验不过直接以非零码退出。
 4. **预览台（无需服务器）**：直接用 Chrome / Edge 打开 `assets/preview.html`，点"打开文件夹"选目录 → 载入全部图片+同名标注 → 拖拽编辑 → "保存"写回原文件。写回需 File System Access API（Chrome/Edge）；其它浏览器改为下载后手动覆盖。渲染仍走命令行（下面第 5 步）。
 5. **渲染单幕成片**：
    ```bash
    <ENV_PY> scripts/render_stream_whiteboard.py <图片> <标注> <输出mp4> assets/drawing-hand.png \
        [--ink-path grid|skeleton] [--color-fill contour-wipe|brush] [--total-ms <毫秒>]
    ```
-   `--total-ms` 缺省时用标注里的 `sceneDurationMs`。末行输出 `OUTPUT=<路径>`。
+   `--total-ms` 缺省时用标注里的 `sceneDurationMs`，且只能延长成片、不能缩短（见「时序模型」）。`--pause` 在逐区域画法下不生效。末行输出 `OUTPUT=<路径>`。
 6. **多幕合并**：
    ```bash
    <ENV_PY> scripts/merge_scenes.py --inputs 幕1.mp4 幕2.mp4 幕3.mp4 --output final.mp4
@@ -143,6 +150,7 @@ assets/whiteboard/<项目名>/
 
 渲染前/后确认：
 
+- `annotation_schema.py` 校验通过（渲染器会自动跑；`[warn]` 也要逐条看过，尤其是 sequence 与 startMs 顺序不一致、区域时间窗重叠）。
 - 首帧为干净的暖米黄旧纸张底，没有提前露出线条。
 - 已阅读对应字幕并实际查看原图；`canvas` 与原图像素尺寸一致，所有 `region` 为整数像素坐标且在画布内。
 - `sequence`、`startMs` 与字幕事件顺序一致；预览图编号/标签/区域来自同一份标注 JSON。
