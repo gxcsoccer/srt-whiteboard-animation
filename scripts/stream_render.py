@@ -1743,6 +1743,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="起笔段停顿节奏: heavy 明显(默认); auto 按密度自动分档; off 关闭; light 少量",
     )
     p.add_argument(
+        "--hand-height", type=int, default=None,
+        help="手部素材高度 (像素，按输出长边 1080 调校，默认 493)",
+    )
+    p.add_argument(
         "--solid-ink-gray", type=int, default=None,
         help="实心墨块补偿：灰度低于该值的像素也算墨迹 (0=关闭，默认；实心 IP 建议 90)",
     )
@@ -1775,6 +1779,8 @@ def _build_cfg(args: argparse.Namespace) -> Config:
         kw["ink_path_mode"] = args.ink_path
     if args.solid_ink_gray is not None:
         kw["solid_ink_gray"] = args.solid_ink_gray
+    if args.hand_height is not None:
+        kw["target_hand_height"] = args.hand_height
     return Config(**kw)
 
 

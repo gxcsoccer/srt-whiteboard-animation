@@ -496,6 +496,9 @@ def _parse_args(argv=None):
     p.add_argument("--brush-radius", type=int, default=None)
     p.add_argument("--cap-long-edge", type=int, default=None,
                    help="输出长边像素上限（预览可调小加速，默认 1080）")
+    p.add_argument("--hand-height", type=int, default=None,
+                   help="手部素材高度（像素，按输出长边 1080 调校，默认 493）；"
+                        "画面被手挡住时调小，例如多格分镜用 260")
     p.add_argument("--solid-ink-gray", type=int, default=None,
                    help="实心墨块补偿：灰度低于该值的像素也算墨迹，"
                         "让大面积实心黑（如小黑的身体）在起笔段就被填实；0=关闭（默认）")
@@ -514,6 +517,8 @@ def _build_cfg(args) -> sr.Config:
         kw["cap_long_edge"] = args.cap_long_edge
     if args.solid_ink_gray is not None:
         kw["solid_ink_gray"] = args.solid_ink_gray
+    if args.hand_height is not None:
+        kw["target_hand_height"] = args.hand_height
     kw["ink_path_mode"] = args.ink_path
     kw["color_fill"] = args.color_fill
     kw["pause_mode"] = args.pause
