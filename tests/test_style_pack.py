@@ -184,3 +184,46 @@ def test_solid_ink_fills_solid_black_areas():
     assert on_cover > 0.95, "开启后实心黑应整块算作墨迹"
     # 线条处仍然是纯黑，实心处取自身墨色（不能画成白色）
     assert on_map[solid].max() <= 90
+
+
+# ──────────────────────────────────────────────────────────────
+# 用户点名的三条规则：文字例外 / 幕间过渡 / 卡点不靠加速
+# ──────────────────────────────────────────────────────────────
+def test_title_and_bullets_are_the_only_text_exception():
+    spec = re.search(r"## 统一出图视觉规范（强制）(.*?)\n## ", SKILL, re.S).group(1)
+    assert "唯一例外" in spec, "标题+要点必须写成点名的例外"
+    assert "标题" in spec and "要点" in spec
+    assert "水印" in spec, "仍要禁止水印/随意标签/英文 UI"
+    # 手写文字区自己的章节
+    assert "## 手写文字区（标题 + 要点）" in SKILL
+    section = SKILL.split("## 手写文字区（标题 + 要点）")[1].split("\n## ")[0]
+    assert '"type": "text"' in section
+    assert "不要烤进出图" in section or "不要烤进" in section
+    assert "不重叠" in section, "文字区必须与绘制区分开"
+    assert "SRT_WB_TEXT_FONT" in section or "--text-font" in section
+
+
+def test_scene_transition_rule_is_documented():
+    step = re.search(r"\n7\. \*\*多幕合并.*?(?=\n8\. )", SKILL, re.S)
+    assert step, "找不到第 7 步"
+    body = step.group(0)
+    assert "禁止硬切回空白画布" in body
+    assert "停留" in body and "擦除" in body
+    assert "--timeline-out" in body
+    params = re.search(r"## 默认实现参数(.*?)\n## ", SKILL, re.S).group(1)
+    assert "幕间过渡" in params
+
+
+def test_cadence_rule_prefers_longer_picture_over_atempo():
+    params = re.search(r"## 默认实现参数(.*?)\n## ", SKILL, re.S).group(1)
+    assert "旁白卡点" in params and "extend" in params
+    quality = SKILL.split("## 质量检查")[1]
+    assert "旁白已开口、画布还空" in quality
+    assert "没有被 atempo 加速" in quality
+
+
+def test_readme_documents_the_three_changes():
+    assert "标题 + 2–4 条要点" in README
+    assert "不硬切回空白画布" in README
+    assert "不用变速把人声催快" in README or "而不是把人声催快" in README
+    assert "drawing-hand-v2.png" in README, "重画版手部素材的接管方式要写进文档"

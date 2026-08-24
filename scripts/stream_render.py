@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,51 @@ import numpy as np
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _ASSETS_DIR = _SCRIPT_DIR.parent / "assets"
 DEFAULT_HAND_PNG = _ASSETS_DIR / "drawing-hand.png"
+
+# 重画版手部素材：存在就自动接管默认资产（原文件保持不动，不覆盖、不删除）。
+HAND_V2_NAME = "drawing-hand-v2.png"
+HAND_V2_CANDIDATES = (
+    _ASSETS_DIR / HAND_V2_NAME,
+    Path("/workspace/e2e-paper/assets") / HAND_V2_NAME,
+)
+ENV_HAND = "SRT_WB_HAND"
+
+
+def resolve_hand_asset(given: str | Path | None, quiet: bool = False) -> Path | None:
+    """
+    决定用哪张手部素材：
+
+      1. 环境变量 SRT_WB_HAND（显式覆盖，优先级最高）
+      2. 调用方传入的路径——只要它不是仓库默认的 drawing-hand.png，就原样使用
+      3. 重画版 drawing-hand-v2.png（仓库 assets/ 或 /workspace/e2e-paper/assets/）
+      4. 仓库默认 assets/drawing-hand.png
+
+    也就是说：v2 一旦出现就自动替代默认资产，但**不会**覆盖或改写 drawing-hand.png；
+    想继续用旧资产就显式把它作为参数传进来以外的方式——用 SRT_WB_HAND 指定即可。
+    """
+    override = os.environ.get(ENV_HAND)
+    if override:
+        path = Path(override)
+        if not path.exists():
+            raise FileNotFoundError(f"环境变量 {ENV_HAND} 指向的手部素材不存在: {path}")
+        return path
+
+    given_path = Path(given) if given else None
+    is_default = (
+        given_path is None
+        or given_path.name == DEFAULT_HAND_PNG.name
+        or given_path.resolve() == DEFAULT_HAND_PNG.resolve()
+        if given_path is not None else True
+    )
+    if given_path is not None and not is_default:
+        return given_path
+
+    for candidate in HAND_V2_CANDIDATES:
+        if candidate.exists():
+            if not quiet:
+                print(f"  手部素材: 使用重画版 {candidate}（原 {DEFAULT_HAND_PNG.name} 未改动）")
+            return candidate
+    return given_path if given_path is not None else DEFAULT_HAND_PNG
 
 
 def _imread_any(path: str | Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
@@ -95,6 +141,9 @@ class Config:
     # ── 笔迹路径模式 ──
     # ink_path_mode: "grid" 网格格中心插值(默认) | "skeleton" 骨架级像素追踪
     ink_path_mode: str = "grid"
+    # ── 手写文字区（标题 + 要点）──
+    # 文字由渲染器排版书写，不让出图模型写中文（必然错字）。None = 自动找楷体/手写体。
+    text_font: str | None = None
     skeleton_min_points: int = 8        # 骨架笔画最少点数（过滤碎片）
     skeleton_resample_spacing: float = 2.5  # 骨架重采样间距（像素）
 
@@ -1803,7 +1852,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_path = out_dir / f"stream_{ts}.mp4"
     h264_path = out_dir / f"stream_{ts}_h264.mp4"
 
-    pen_png = Path(args.pen_image) if args.pen_image else None
+    pen_png = resolve_hand_asset(args.pen_image)
     renderer = StreamBoardRenderer(image_bgr, cfg, pen_png, args.bare_tip)
     print(f"  输入: {args.image}")
     print(f"  输出尺寸: {renderer.out_w}x{renderer.out_h}, 帧率: {cfg.fps}")

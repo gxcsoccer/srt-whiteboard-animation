@@ -18,12 +18,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
 from fractions import Fraction
 from pathlib import Path
+
+import cv2
+import numpy as np  # noqa: F401  (类型注解与过渡帧处理用)
 
 # 补边颜色：与渲染器画布底色一致（stream_render.Config.canvas_hex）
 PAD_COLOR = "0xF6F1E3"
@@ -138,6 +142,166 @@ def _concat_filter(
     return False
 
 
+def build_transition(
+    prev_video: Path, next_video: Path, out_path: Path,
+    hold_ms: int, erase_ms: int, fps: float | None = None,
+) -> Path | None:
+    """
+    造一段「上一幕停留 → 擦掉 → 露出下一幕起始纸面」的过渡片段。
+
+    没有它的话，幕与幕之间就是硬切回空白画布：上一幕刚画完就瞬间消失，
+    观众（和已经开口的旁白）会撞上 1–2 秒空白。这里的做法是：
+      1. 上一幕最后一帧停留 hold_ms（≥0.5s，用户要求的下限）
+      2. 一块橡皮从左到右擦过，把画面逐列换成下一幕的首帧（干净纸面）
+    擦除用下一幕首帧作为目标，所以过渡结束时画面正好等于下一幕的起点，
+    拼接处不会闪。
+    """
+    prev_frame = _last_frame(prev_video)
+    next_frame = _first_frame(next_video)
+    if prev_frame is None or next_frame is None:
+        return None
+    if prev_frame.shape != next_frame.shape:
+        next_frame = cv2.resize(
+            next_frame, (prev_frame.shape[1], prev_frame.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    rate = fps or _probe_fps(prev_video) or 30.0
+    hold_frames = max(1, int(round(hold_ms * rate / 1000)))
+    erase_frames = max(1, int(round(erase_ms * rate / 1000)))
+    height, width = prev_frame.shape[:2]
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    raw = out_path.with_name(out_path.stem + "_raw.mp4")
+    writer = cv2.VideoWriter(str(raw), fourcc, rate, (width, height))
+    if not writer.isOpened():
+        return None
+    try:
+        for _ in range(hold_frames):          # 1) 完整画面停留
+            writer.write(prev_frame)
+        for index in range(1, erase_frames + 1):  # 2) 橡皮擦过
+            progress = index / erase_frames
+            edge = int(round(width * progress))
+            frame = prev_frame.copy()
+            if edge > 0:
+                frame[:, :edge] = next_frame[:, :edge]
+            _draw_eraser(frame, edge, height)
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return raw
+    result = subprocess.run(
+        [ffmpeg, "-y", "-loglevel", "error", "-i", str(raw),
+         "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", str(out_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"  [warn] 过渡片段转码失败，改用原始编码: {result.stderr.strip()[:160]}")
+        return raw
+    raw.unlink(missing_ok=True)
+    return out_path
+
+
+def _draw_eraser(frame: "np.ndarray", edge: int, height: int) -> None:
+    """在擦除前沿画一块简易橡皮，让"擦"这个动作看得见。"""
+    if edge <= 0 or edge >= frame.shape[1]:
+        return
+    half_h = max(12, height // 12)
+    top = max(0, height // 2 - half_h)
+    bottom = min(height, height // 2 + half_h)
+    left = max(0, edge - max(10, height // 26))
+    right = min(frame.shape[1], edge + max(4, height // 90))
+    cv2.rectangle(frame, (left, top), (right, bottom), (120, 120, 120), thickness=-1)
+    cv2.rectangle(frame, (left, top), (right, bottom), (60, 60, 60), thickness=2)
+
+
+def _duration_ms(path: Path) -> float:
+    """片段时长（毫秒）。优先 ffprobe，退回 cv2 的帧数/帧率。"""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is not None:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True,
+        )
+        try:
+            return float(result.stdout.strip()) * 1000.0
+        except ValueError:
+            pass
+    capture = cv2.VideoCapture(str(path))
+    frames = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    rate = capture.get(cv2.CAP_PROP_FPS)
+    capture.release()
+    return (frames / rate * 1000.0) if frames and rate else 0.0
+
+
+def _write_timeline(path: Path, inputs: list[Path], transition_ms: int) -> None:
+    """
+    记录每幕在合并结果中的起始时间。插了过渡之后，第 k 幕整体后移
+    k × 过渡时长——旁白要跟着重定时，否则语音会比画面早说。
+    配合 parse_srt.py 的 scenes[].cueRange，可用 retime_srt.py 平移字幕。
+    """
+    scenes = []
+    cursor = 0.0
+    for index, video in enumerate(inputs):
+        duration = _duration_ms(video)
+        scenes.append({
+            "sceneIndex": index + 1,
+            "input": str(video),
+            "startMs": int(round(cursor)),
+            "durationMs": int(round(duration)),
+            "endMs": int(round(cursor + duration)),
+        })
+        cursor += duration
+        if index + 1 < len(inputs):
+            cursor += transition_ms
+    payload = {
+        "transitionMs": transition_ms,
+        "totalMs": int(round(cursor)),
+        "scenes": scenes,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  时间线已写出: {path}（过渡 {transition_ms}ms/处，总长 {payload['totalMs'] / 1000:.2f}s）")
+
+
+def _first_frame(path: Path):
+    capture = cv2.VideoCapture(str(path))
+    ok, frame = capture.read()
+    capture.release()
+    return frame if ok else None
+
+
+def _last_frame(path: Path):
+    capture = cv2.VideoCapture(str(path))
+    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame = None
+    if total > 0:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, total - 1))
+        ok, candidate = capture.read()
+        if ok:
+            frame = candidate
+    if frame is None:                     # 有些容器读不到总帧数，退回顺序读到底
+        capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        while True:
+            ok, candidate = capture.read()
+            if not ok:
+                break
+            frame = candidate
+    capture.release()
+    return frame
+
+
+def _probe_fps(path: Path) -> float | None:
+    capture = cv2.VideoCapture(str(path))
+    rate = capture.get(cv2.CAP_PROP_FPS)
+    capture.release()
+    return rate if rate and rate > 0 else None
+
+
 def _ffmpeg_concat(inputs: list[Path], output: Path) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -198,6 +362,12 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="按顺序合并多幕白板动画 MP4")
     p.add_argument("--inputs", nargs="+", required=True, help="按播放顺序的 MP4 列表")
     p.add_argument("--output", required=True, help="合并输出路径")
+    p.add_argument("--hold-ms", type=int, default=600,
+                   help="幕尾完整画面停留毫秒（默认 600，用户要求 ≥500）")
+    p.add_argument("--erase-ms", type=int, default=700,
+                   help="擦除过渡毫秒（默认 700）；设 0 关闭擦除只保留停留")
+    p.add_argument("--timeline-out", default=None,
+                   help="把每幕在合并结果中的起始时间写成 JSON，供 SRT 重定时使用")
     args = p.parse_args(argv)
 
     inputs = [Path(x) for x in args.inputs]
@@ -208,11 +378,35 @@ def main(argv=None) -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    if _ffmpeg_concat(inputs, output) or _pyav_concat(inputs, output):
-        print(f"OUTPUT={output.resolve()}")
-        return 0
-    print("[err] 合并失败：系统无 ffmpeg 且 PyAV 不可用", file=sys.stderr)
-    return 1
+    # 幕与幕之间插入「停留 + 擦除」过渡，避免硬切回空白画布
+    segments = list(inputs)
+    transitions: list[Path] = []
+    hold_ms, erase_ms = max(0, args.hold_ms), max(0, args.erase_ms)
+    if len(inputs) > 1 and (hold_ms + erase_ms) > 0:
+        temp_dir = Path(tempfile.mkdtemp(prefix="scene_transition_"))
+        segments = []
+        for index, path in enumerate(inputs):
+            segments.append(path)
+            if index + 1 >= len(inputs):
+                break
+            piece = temp_dir / f"transition-{index + 1:02d}.mp4"
+            built = build_transition(path, inputs[index + 1], piece, hold_ms, erase_ms)
+            if built is None:
+                print(f"  [warn] 第 {index + 1}→{index + 2} 幕之间的过渡生成失败，直接硬切")
+                continue
+            transitions.append(built)
+            segments.append(built)
+        print(f"  过渡: {len(transitions)} 段（停留 {hold_ms}ms + 擦除 {erase_ms}ms）")
+
+    ok = _ffmpeg_concat(segments, output) or _pyav_concat(segments, output)
+    if not ok:
+        print("[err] 合并失败：系统无 ffmpeg 且 PyAV 不可用", file=sys.stderr)
+        return 1
+
+    if args.timeline_out:
+        _write_timeline(Path(args.timeline_out), inputs, hold_ms + erase_ms if transitions else 0)
+    print(f"OUTPUT={output.resolve()}")
+    return 0
 
 
 if __name__ == "__main__":

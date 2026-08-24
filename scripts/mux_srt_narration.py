@@ -5,8 +5,10 @@ SRT 旁白混音：edge-tts 合成中文旁白 → 按字幕时间轴铺成整�
 流程：
   1. 解析 SRT（复用 parse_srt.py）
   2. 每条字幕单独用 edge-tts 合成（默认云希 zh-CN-YunxiNeural，免费、无需 key）
-  3. 逐条对齐到它自己的字幕起点；音频比窗口长时用 ffmpeg atempo 加速塞进窗口，
-     **不允许越界压到下一条**（窗口 = 下一条起点 − 本条起点 − 呼吸间隔）
+  3. 逐条对齐到它自己的字幕起点。默认 **不改语速**：语音比字幕窗长就让它自然说完、
+     后面的句子顺延（句间保留半拍），整体放不进视频就报错，提示去加长画面/凝视——
+     卡点应该由画面时长决定，而不是把人声催快。
+     只有显式 `--fit atempo` 才会加速塞进窗口，并逐条告警。
   4. 铺成与视频等长的单声道 wav
   5. ffmpeg mux：视频流直接 copy，音频编码成 aac
 
@@ -246,7 +248,14 @@ def mux_narration(
     rate: str = "+0%",
     gap_ms: int = DEFAULT_GAP_MS,
     keep_wav: bool = False,
+    fit_mode: str = "extend",
 ) -> Path:
+    """
+    fit_mode:
+      "extend"（默认）—— 不动语速。语音超出字幕窗就让它自然说完、后面顺延；
+                          如果整体超出视频长度，报错并提示去加长画面/凝视。
+      "atempo"        —— 强行塞进窗口（会加速并告警），只在明确要求时用。
+    """
     if not srt_path.exists():
         raise NarrationError(f"找不到字幕: {srt_path}")
     if not video_path.exists():
@@ -264,26 +273,60 @@ def mux_narration(
 
     clips: list[tuple[int, np.ndarray]] = []
     sped_up = 0
+    extended: list[tuple[int, float]] = []
+    overflow_ms = 0.0
     with tempfile.TemporaryDirectory(prefix="srtnarration_") as tmp:
         tmp_dir = Path(tmp)
+        cursor_ms = 0.0          # 上一条旁白的实际结束时间（extend 模式下用来防重叠）
         for index, (cue, (start_ms, window_ms)) in enumerate(zip(cues, windows), start=1):
             mp3 = tmp_dir / f"cue-{index:03d}.mp3"
             synthesize_cue(cue["text"], voice, mp3, rate=rate)
             raw_ms = probe_duration_ms(mp3)
-            factor = fit_factor(raw_ms, window_ms)
-            pcm = decode_pcm(mp3, factor)
-
-            limit_samples = int(round(window_ms * SAMPLE_RATE / 1000))
-            if len(pcm) > limit_samples:      # atempo 有取整误差，硬截断兜底
-                pcm = _fade_out(pcm[:limit_samples])
-            clips.append((start_ms, pcm))
 
             note = ""
-            if factor:
-                sped_up += 1
-                note = f"  加速 ×{factor:.2f}" + ("  [偏快，建议精简这条字幕]" if factor > SPEED_WARN else "")
-            print(f"  #{index:>3} {start_ms / 1000:7.2f}s 窗口 {window_ms / 1000:5.2f}s "
+            place_ms = float(start_ms)
+            if fit_mode == "atempo":
+                # 强行塞进窗口：只有显式要求时才这么干，音会变快、卡点会飘
+                factor = fit_factor(raw_ms, window_ms)
+                pcm = decode_pcm(mp3, factor)
+                limit_samples = int(round(window_ms * SAMPLE_RATE / 1000))
+                if len(pcm) > limit_samples:      # atempo 有取整误差，硬截断兜底
+                    pcm = _fade_out(pcm[:limit_samples])
+                if factor:
+                    sped_up += 1
+                    note = (f"  加速 ×{factor:.2f}"
+                            + ("  [偏快，建议改用 --fit extend 或精简字幕]"
+                               if factor > SPEED_WARN else ""))
+            else:
+                # 默认 extend：不改语速。语音超窗就让它自然说完，
+                # 后面的句子顺延（句与句之间至少留 gap_ms 半拍）。
+                pcm = decode_pcm(mp3, None)
+                place_ms = max(place_ms, cursor_ms)
+                if place_ms > start_ms + 1:
+                    note = f"  顺延 +{place_ms - start_ms:.0f}ms"
+                if raw_ms > window_ms:
+                    extended.append((index, raw_ms - window_ms))
+                    note += (f"  超窗 +{raw_ms - window_ms:.0f}ms（未加速；"
+                             f"画面这一笔该画久一点）")
+
+            duration_ms = len(pcm) / SAMPLE_RATE * 1000
+            cursor_ms = place_ms + duration_ms + gap_ms
+            if place_ms + duration_ms > video_ms:
+                overflow_ms = max(overflow_ms, place_ms + duration_ms - video_ms)
+            clips.append((int(round(place_ms)), pcm))
+
+            print(f"  #{index:>3} {place_ms / 1000:7.2f}s 窗口 {window_ms / 1000:5.2f}s "
                   f"语音 {raw_ms / 1000:5.2f}s{note}")
+
+        if overflow_ms > 0 and fit_mode != "atempo":
+            raise NarrationError(
+                f"旁白比画面长 {overflow_ms / 1000:.2f}s，放不进当前成片。\n"
+                f"  请按下面任一种方式加长画面（推荐，卡点才对得上）：\n"
+                f"    · 把最后一幕的 sceneDurationMs / 凝视时间加长 ≥{overflow_ms / 1000:.1f}s\n"
+                f"    · 把相关区域的 durationMs 调大（画慢一点）后重渲\n"
+                f"    · 或精简这几条字幕的文案\n"
+                f"  只有确实要强行塞进现有时长时，才用 --fit atempo（会加速、卡点会飘）。"
+            )
 
         bed = build_bed(clips, video_ms)
         wav_path = (
@@ -297,7 +340,13 @@ def mux_narration(
 
     speech_ms = sum(len(pcm) for _, pcm in clips) / SAMPLE_RATE * 1000
     print(f"\n  旁白总时长 {speech_ms / 1000:.2f}s / 视频 {video_ms / 1000:.2f}s"
-          f"（占比 {speech_ms / video_ms * 100:.0f}%），其中 {sped_up} 条被加速")
+          f"（占比 {speech_ms / video_ms * 100:.0f}%）")
+    if fit_mode == "atempo":
+        print(f"  模式 atempo：{sped_up} 条被加速")
+    else:
+        print(f"  模式 extend：未改语速，{len(extended)} 条超出字幕窗（已自然说完并顺延）")
+        for index, over in extended[:6]:
+            print(f"    · 第 {index} 条超窗 {over / 1000:.2f}s —— 建议把对应区域画久一点")
     return final
 
 
@@ -314,6 +363,10 @@ def _parse_args(argv=None):
                         help="edge-tts 语速偏移，如 -10%% / +10%%（默认 +0%%）")
     parser.add_argument("--gap-ms", type=int, default=DEFAULT_GAP_MS,
                         help=f"相邻旁白之间的呼吸间隔毫秒（默认 {DEFAULT_GAP_MS}）")
+    parser.add_argument("--fit", dest="fit_mode", default="extend",
+                        choices=["extend", "atempo"],
+                        help="语音超出字幕窗时怎么办：extend 不改语速、自然说完并顺延（默认，"
+                             "放不进就报错让你加长画面）；atempo 强行加速塞进窗口（会告警）")
     parser.add_argument("--keep-wav", action="store_true", help="保留铺好的旁白 wav")
     return parser.parse_args(argv)
 
@@ -327,6 +380,7 @@ def main(argv=None) -> int:
         final = mux_narration(
             Path(args.srt), Path(args.video), Path(args.output),
             voice=args.voice, rate=args.rate, gap_ms=args.gap_ms, keep_wav=args.keep_wav,
+            fit_mode=args.fit_mode,
         )
     except NarrationError as exc:
         print(f"[err] {exc}", file=sys.stderr)

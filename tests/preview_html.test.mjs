@@ -53,7 +53,8 @@ context.globalThis = context;
 
 // 尾部追加导出：const/let 声明不会挂到 vm 的全局对象上，这里显式带出来
 const epilogue = `
-;globalThis.__t = { S, cfgTotalMs, cfgEls, endMs, totalMs, escapeHtml, saveScene, HAND_H_RATIO };
+;globalThis.__t = { S, cfgTotalMs, cfgEls, endMs, totalMs, escapeHtml, saveScene, HAND_H_RATIO,
+                    isText, textLines, drawTextBlock };
 `;
 vm.runInNewContext(source + epilogue, context, { filename: 'preview.html<script>' });
 const t = context.__t;
@@ -112,4 +113,54 @@ assert.ok(
   '手部叠加不应再假定画布宽度为 1672',
 );
 
-console.log('preview.html: 4 组断言全部通过');
+// ---------- 5) 文字区（标题 + 要点）----------
+assert.equal(t.isText({ type: 'text' }), true);
+assert.equal(t.isText({ type: 'object' }), false);
+assert.equal(t.isText(null), false);
+
+// text 可以是字符串，也可以是对象；bullets 允许写成单个字符串
+// 注意：vm 里造出来的对象跨 realm，不能用 deepStrictEqual 比原型，逐字段比即可
+const lines = e => { const r = t.textLines(e); return [r.title, [...r.bullets].join('|')]; };
+assert.deepEqual(lines({ text: '只有标题' }), ['只有标题', '']);
+assert.deepEqual(lines({ text: { title: '标题', bullets: ['一', '二'] } }), ['标题', '一|二']);
+assert.deepEqual(lines({ text: { bullets: '就一条' } }), ['', '就一条']);
+assert.deepEqual(lines({}), ['', '']);
+
+// drawTextBlock 要真的往画布上写字：用一个记录调用的假 ctx
+function recordingCtx() {
+  const calls = { fillText: [], fillRect: 0, clipped: false, fonts: [] };
+  return {
+    calls,
+    save() {}, restore() {}, beginPath() { }, clip() { calls.clipped = true; },
+    rect() {}, fillRect() { calls.fillRect++; },
+    fillText(text) { calls.fillText.push(text); },
+    measureText(text) { return { width: text.length * 10 }; },
+    set font(value) { calls.fonts.push(value); }, get font() { return ''; },
+    set fillStyle(_v) {}, get fillStyle() { return ''; },
+    set textBaseline(_v) {}, get textBaseline() { return ''; },
+  };
+}
+const textElement = {
+  type: 'text',
+  region: { x: 20, y: 20, width: 400, height: 160 },
+  text: { title: '本幕标题', bullets: ['要点一', '要点二'] },
+};
+const ctx1 = recordingCtx();
+t.drawTextBlock(ctx1, textElement);
+assert.deepEqual([...ctx1.calls.fillText], ['本幕标题', '要点一', '要点二'], '标题与要点都要画出来');
+assert.ok(ctx1.calls.fillRect >= 3, '标题下划线 + 每条要点的短横');
+assert.ok(ctx1.calls.clipped, '必须按区域裁剪，文字不能溢出区域');
+assert.ok(ctx1.calls.fonts.some(f => /Kaiti|WenKai/.test(f)), '优先楷体/手写体字族');
+
+// 空内容不应该画任何东西
+const ctx2 = recordingCtx();
+t.drawTextBlock(ctx2, { type: 'text', region: textElement.region, text: { title: '', bullets: [] } });
+assert.equal(ctx2.calls.fillText.length, 0);
+
+// 静态约束：新增文字区按钮、编辑控件、type 为 text 的模板
+assert.ok(source.includes("type: 'text'"), '新增文字区要写 type: text');
+assert.ok(/addTextBtn/.test(source), '要有"＋ 文字区"按钮');
+assert.ok(/f_title|f_bullets/.test(source), '要有标题与要点的编辑控件');
+assert.ok(source.includes('e.text.bullets = bullets'), '要点要写回 annotation');
+
+console.log('preview.html: 5 组断言全部通过');

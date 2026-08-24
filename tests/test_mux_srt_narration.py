@@ -206,6 +206,23 @@ def _silent_video(path: Path, seconds: float) -> None:
     )
 
 
+def _voiced_runs(pcm: "np.ndarray", rate: int, block_ms: int = 20) -> list[float]:
+    """用短时包络找出有声段的时长（正弦波频繁过零，不能按单采样判静音）。"""
+    block = max(1, int(rate * block_ms / 1000))
+    trimmed = pcm[: len(pcm) // block * block].reshape(-1, block)
+    loud = np.abs(trimmed).max(axis=1) > 100
+    runs, count = [], 0
+    for value in loud:
+        if value:
+            count += 1
+        elif count:
+            runs.append(count * block / rate)
+            count = 0
+    if count:
+        runs.append(count * block / rate)
+    return runs
+
+
 def _fake_tts(duration_s: float):
     """用 ffmpeg 生成一段正弦波当作"合成好的旁白"，避免联网。"""
     def synth(text: str, voice: str, out_path: Path, rate: str = "+0%") -> None:
@@ -242,8 +259,53 @@ def test_end_to_end_mux_adds_audio_track(tmp_path, monkeypatch):
 
 
 @needs_ffmpeg
-def test_over_long_speech_is_sped_up_not_overlapped(tmp_path, monkeypatch, capsys):
-    """每条语音都比窗口长一倍：必须被压回窗口内，绝不越到下一条。"""
+def test_extend_mode_refuses_to_squeeze_and_asks_for_longer_picture(tmp_path, monkeypatch):
+    """
+    默认 extend：语音塞不进画面时**不加速**，而是报错要求加长画面。
+    卡点应该由作画时长决定，不能把人声催快。
+    """
+    srt = tmp_path / "a.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    video = tmp_path / "silent.mp4"
+    _silent_video(video, 9.5)
+    monkeypatch.setattr(mux, "synthesize_cue", _fake_tts(6.0))   # 窗口只有 2.88s
+
+    with pytest.raises(mux.NarrationError) as excinfo:
+        mux.mux_narration(srt, video, tmp_path / "narrated.mp4")
+    message = str(excinfo.value)
+    assert "旁白比画面长" in message
+    assert "sceneDurationMs" in message and "durationMs" in message
+    assert "--fit atempo" in message, "要告诉用户强行塞进的开关在哪"
+
+
+@needs_ffmpeg
+def test_extend_mode_keeps_speed_and_pushes_later_cues(tmp_path, monkeypatch, capsys):
+    """语音略超窗但视频够长：自然说完 + 后面顺延，语速一点不改。"""
+    srt = tmp_path / "a.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    video = tmp_path / "silent.mp4"
+    _silent_video(video, 20.0)                 # 画面留足
+    monkeypatch.setattr(mux, "synthesize_cue", _fake_tts(4.0))   # 窗口 2.88s
+
+    out = tmp_path / "narrated.mp4"
+    mux.mux_narration(srt, video, out, keep_wav=True)
+    printed = capsys.readouterr().out
+    assert "加速 ×" not in printed, "extend 模式不允许改语速"
+    assert "顺延 +" in printed and "超窗 +" in printed
+
+    wav = out.with_name(out.stem + ".narration.wav")
+    with wave.open(str(wav)) as handle:
+        pcm = np.frombuffer(handle.readframes(handle.getnframes()), dtype=np.int16)
+    # 每段语音仍是完整 4s（未被压缩）：用 20ms 包络找出有声段
+    runs = _voiced_runs(pcm, mux.SAMPLE_RATE)
+    assert runs, "应有有声段"
+    assert max(runs) == pytest.approx(4.0, abs=0.3), f"语音时长被改动了: {runs}"
+    assert len(runs) == 3, f"三条字幕应有三段语音: {runs}"
+
+
+@needs_ffmpeg
+def test_atempo_mode_squeezes_only_when_asked(tmp_path, monkeypatch, capsys):
+    """显式 --fit atempo 时才压回窗口内，且逐条告警、绝不越到下一条。"""
     srt = tmp_path / "a.srt"
     srt.write_text(SRT, encoding="utf-8")
     video = tmp_path / "silent.mp4"
@@ -251,10 +313,11 @@ def test_over_long_speech_is_sped_up_not_overlapped(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(mux, "synthesize_cue", _fake_tts(6.0))   # 窗口只有 2.88s
     out = tmp_path / "narrated.mp4"
-    mux.mux_narration(srt, video, out, keep_wav=True)
+    mux.mux_narration(srt, video, out, keep_wav=True, fit_mode="atempo")
 
     printed = capsys.readouterr().out
     assert "加速 ×" in printed
+    assert "模式 atempo" in printed
 
     wav = out.with_name(out.stem + ".narration.wav")
     with wave.open(str(wav)) as handle:
@@ -293,14 +356,26 @@ def test_no_burned_in_subtitles_video_stream_is_copied(tmp_path, monkeypatch):
 # 文档：第 8 步必须存在且写清约束
 # ──────────────────────────────────────────────────────────────
 def test_skill_documents_step_eight():
+    import re
+
     skill = (REPO / "SKILL.md").read_text(encoding="utf-8")
-    assert "8. **配旁白" in skill, "工作流程要有第 8 步"
-    step = skill.split("8. **配旁白")[1].split("\n")[0]
+    match = re.search(r"\n8\. \*\*(.*?)(?=\n## )", skill, re.S)
+    assert match, "工作流程要有第 8 步"
+    step = match.group(0)
     assert "mux_srt_narration.py" in step
+    assert "retime_srt.py" in step, "第 8 步要先把字幕对齐到成片真实时间线"
     assert "等待用户确认" in step, "第 8 步也要保留确认关卡"
     assert "不烧录字幕" in step
+    assert "--fit extend" in step and "不改语速" in step
     assert "edge-tts" in skill and "zh-CN-YunxiNeural" in skill
     assert "Piper" not in skill and "piper" not in skill, "旁白只用 edge-tts"
+
+
+def test_skill_forbids_atempo_as_the_default_cadence_fix():
+    """卡点靠画面时长解决，不靠加速人声——文档必须把这条写死。"""
+    skill = (REPO / "SKILL.md").read_text(encoding="utf-8")
+    assert "不要**用加速凑" in skill or "**而不是**把人声催快" in skill
+    assert "只有用户明确要求" in skill and "--fit atempo" in skill
 
 
 def test_readme_and_requirements_mention_edge_tts():

@@ -32,6 +32,7 @@ import numpy as np
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 import stream_render as sr  # noqa: E402
+import text_render as tr  # noqa: E402
 from annotation_schema import (  # noqa: E402
     AnnotationError,
     ensure_valid,
@@ -93,6 +94,13 @@ class RegionStreamRenderer:
         self.sy = self.out_h / ch
 
         self.color_img = cv2.resize(image_bgr, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
+
+        # 文字区（标题 + 要点）：由渲染器自己排版并写进画面，不指望出图模型写中文。
+        # 必须在推导墨迹图之前合成进 color_img，这样文字天然被当成墨迹，
+        # 揭示/上色/凝视各阶段都不需要额外分支。
+        self.text_plans: dict[int, tuple[list[tuple[int, int]], set[int]]] = {}
+        self._composite_text_blocks()
+
         gray = cv2.cvtColor(self.color_img, cv2.COLOR_BGR2GRAY)
         self.thresh_map = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10
@@ -120,6 +128,37 @@ class RegionStreamRenderer:
                 hand_data = sr._procedural_tip(cfg.target_hand_height)
                 ax, ay = 0.5, 0.70
             self.tip = sr.TipOverlay(hand_data[0], hand_data[1], tip_anchor_x=ax, tip_anchor_y=ay)
+
+    # ── 文字区：排版 → 合成进 color_img → 记下书写笔序 ──
+    def _composite_text_blocks(self) -> None:
+        elements = self.ann.get("elements", [])
+        for index, element in enumerate(elements):
+            if element.get("type") != "text":
+                continue
+            spec = tr.TextBlockSpec.from_annotation(element.get("text", ""))
+            if not spec.lines:
+                continue
+            x0, y0, x1, y1 = _scaled_rect(
+                element["region"], self.sx, self.sy, self.out_w, self.out_h
+            )
+            region_w, region_h = x1 - x0, y1 - y0
+            if region_w < 8 or region_h < 8:
+                print(f"  [warn] 文字区太小，跳过: {element.get('id', index)}")
+                continue
+
+            ink, strokes = tr.render_text_block(
+                spec, region_w, region_h, font_path=self.cfg.text_font
+            )
+            patch = self.color_img[y0:y1, x0:x1]
+            np.minimum(patch, np.repeat(ink[:, :, None], 3, axis=2), out=patch)
+
+            samples, pen_lifts = tr.strokes_to_samples(
+                strokes, (x0, y0), step=max(2, self.cfg.sample_step)
+            )
+            self.text_plans[index] = (samples, pen_lifts)
+            head = spec.title or (spec.bullets[0] if spec.bullets else "")
+            print(f"  文字区 {element.get('id', index)}: {len(spec.lines)} 行"
+                  f"（{head[:12]}…） {len(strokes)} 笔 / {len(samples)} 采样点")
 
     # 采样原图四角，把接近背景色的像素替换为画布底色
     def _match_original_background(self) -> None:
@@ -389,6 +428,9 @@ class RegionStreamRenderer:
                 writer.write(snap)
             cur_ms += n * ms_per_frame
 
+        # 文字区的笔序是按标注原顺序算的，这里按 startMs 重排后要能找回来
+        original_index = {id(element): i for i, element in enumerate(self.ann["elements"])}
+
         try:
             for idx, element in enumerate(elements):
                 reveal = element["reveal"]
@@ -399,6 +441,15 @@ class RegionStreamRenderer:
                 allowed = self._allowed_mask(element, elements[idx + 1:])
                 ink_frames = max(1, round(dur_ms * cfg.ink_weight / weight_sum * cfg.fps / 1000))
                 color_frames = max(1, round(dur_ms * cfg.color_weight / weight_sum * cfg.fps / 1000))
+
+                # ── 文字区：像写字一样沿笔序落墨，整段时长都给"书写"，不做添彩 ──
+                plan = self.text_plans.get(original_index.get(id(element), -1))
+                if element.get("type") == "text" and plan is not None:
+                    samples, pen_lifts = plan
+                    write_frames = max(1, round(dur_ms * cfg.fps / 1000))
+                    self._lay_ink(writer, write_frames, samples, pen_lifts, allowed)
+                    cur_ms += write_frames * ms_per_frame
+                    continue
 
                 if cfg.ink_path_mode == "skeleton":
                     strokes = self._region_skeleton_strokes(allowed)
@@ -496,6 +547,9 @@ def _parse_args(argv=None):
     p.add_argument("--brush-radius", type=int, default=None)
     p.add_argument("--cap-long-edge", type=int, default=None,
                    help="输出长边像素上限（预览可调小加速，默认 1080）")
+    p.add_argument("--text-font", default=None,
+                   help="文字区字体文件（默认自动探测楷体/手写体，退回常规中文字体；"
+                        "也可用环境变量 SRT_WB_TEXT_FONT）")
     p.add_argument("--hand-height", type=int, default=None,
                    help="手部素材高度（像素，按输出长边 1080 调校，默认 493）；"
                         "画面被手挡住时调小，例如多格分镜用 260")
@@ -519,6 +573,8 @@ def _build_cfg(args) -> sr.Config:
         kw["solid_ink_gray"] = args.solid_ink_gray
     if args.hand_height is not None:
         kw["target_hand_height"] = args.hand_height
+    if args.text_font is not None:
+        kw["text_font"] = args.text_font
     kw["ink_path_mode"] = args.ink_path
     kw["color_fill"] = args.color_fill
     kw["pause_mode"] = args.pause
@@ -561,7 +617,7 @@ def main(argv=None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path = out_path.with_name(out_path.stem + "_raw.mp4")
 
-    hand_png = Path(args.hand) if args.hand else None
+    hand_png = sr.resolve_hand_asset(args.hand)
     renderer = RegionStreamRenderer(image_bgr, annotation, cfg, hand_png, args.bare_tip)
     print(f"  输入: {args.image}")
     print(f"  输出尺寸: {renderer.out_w}x{renderer.out_h}, 帧率: {cfg.fps}")

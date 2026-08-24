@@ -86,6 +86,69 @@ def _check_rect(
         )
 
 
+def _check_text_block(element: dict, where: str, report: Report) -> None:
+    """
+    校验文字区（`type: "text"`）：标题+要点由渲染器手写出来，所以内容必须齐、且要短。
+    画面内文字仅允许「标题 + 2–4 条要点」这一种形态（用户点名的例外）。
+    """
+    raw = element.get("text")
+    if raw is None:
+        report.errors.append(f'{where}: type 为 "text" 时必须有 text 字段（标题与要点）')
+        return
+    if isinstance(raw, str):
+        if not raw.strip():
+            report.errors.append(f"{where}.text: 文字内容为空")
+        return
+    if not isinstance(raw, dict):
+        report.errors.append(
+            f"{where}.text: 必须是字符串或对象，实际是 {type(raw).__name__}"
+        )
+        return
+
+    title = raw.get("title", "")
+    bullets = raw.get("bullets", [])
+    if not isinstance(title, str):
+        report.errors.append(f"{where}.text.title: 必须是字符串")
+        title = ""
+    if isinstance(bullets, str):
+        bullets = [bullets]
+    if not isinstance(bullets, list):
+        report.errors.append(f"{where}.text.bullets: 必须是数组")
+        bullets = []
+    elif any(not isinstance(b, str) for b in bullets):
+        report.errors.append(f"{where}.text.bullets: 每一条都必须是字符串")
+        bullets = [b for b in bullets if isinstance(b, str)]
+
+    if not title.strip() and not [b for b in bullets if b.strip()]:
+        report.errors.append(f"{where}.text: 标题与要点不能同时为空")
+        return
+
+    if not title.strip():
+        report.warnings.append(f"{where}.text: 建议写一行标题（本幕主旨）")
+    elif len(title) > 14:
+        report.warnings.append(
+            f"{where}.text.title: 标题 {len(title)} 字偏长（建议 ≤14 字），字号会被自动缩小"
+        )
+    if len(bullets) > 4:
+        report.warnings.append(
+            f"{where}.text.bullets: {len(bullets)} 条偏多（建议 2–4 条），画面会显得满"
+        )
+    for index, bullet in enumerate(bullets):
+        if len(bullet) > 18:
+            report.warnings.append(
+                f"{where}.text.bullets[{index}]: {len(bullet)} 字偏长（建议 ≤18 字）"
+            )
+
+
+def _rects_overlap(a: dict, b: dict) -> bool:
+    return not (
+        a["x"] + a["width"] <= b["x"]
+        or b["x"] + b["width"] <= a["x"]
+        or a["y"] + a["height"] <= b["y"]
+        or b["y"] + b["height"] <= a["y"]
+    )
+
+
 def validate_annotation(
     annotation: object, image_size: tuple[int, int] | None = None
 ) -> Report:
@@ -196,6 +259,9 @@ def validate_annotation(
                     report,
                 )
 
+        if element.get("type") == "text":
+            _check_text_block(element, name, report)
+
         sequence = element.get("sequence")
         if sequence is not None and not _is_number(sequence):
             report.warnings.append(
@@ -203,6 +269,29 @@ def validate_annotation(
             )
         elif _is_number(sequence) and _is_number(start_ms):
             sequences.append((float(sequence), name))
+
+    # ── 提醒：文字区被后续区域盖住会写不全（允许掩码要扣除后续 region）──
+    usable = [
+        e for e in elements
+        if isinstance(e, dict) and isinstance(e.get("region"), dict)
+        and all(_is_number(e["region"].get(k)) for k in ("x", "y", "width", "height"))
+    ]
+    by_start = sorted(
+        usable,
+        key=lambda e: (e.get("reveal") or {}).get("startMs", 0)
+        if _is_number((e.get("reveal") or {}).get("startMs")) else 0,
+    )
+    for position, element in enumerate(by_start):
+        if element.get("type") != "text":
+            continue
+        for later in by_start[position + 1:]:
+            if _rects_overlap(element["region"], later["region"]):
+                report.warnings.append(
+                    f"文字区 {element.get('id') or element.get('label') or '?'} 与后画的 "
+                    f"{later.get('id') or later.get('label') or '?'} 区域重叠："
+                    "重叠部分会被允许掩码扣掉、文字写不全，请把两个区域分开"
+                )
+                break
 
     # ── 提醒：渲染顺序以 startMs 为准，sequence 只是标注序号 ──
     if len(sequences) == len(timeline) and len(timeline) > 1:
