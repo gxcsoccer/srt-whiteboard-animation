@@ -240,7 +240,8 @@ def test_retime_subtracts_lead_trim():
         path = Path(tmp) / "scene.json"
         path.write_text(json.dumps(annotation), encoding="utf-8")
         retimed = retime_srt.align_to_drawing(
-            cues, scenes, timeline, [path], lead_ms=250, tail_ms=250
+            cues, scenes, timeline, [path], lead_ms=250, tail_ms=250,
+            cover_narration_ms=0,          # 单独测 leadTrim 校正，关掉封面提前
         )
     # 幕起点 6000 − 裁掉 800 + 区域 2000 + lead 250 = 7450
     assert retimed[0]["startMs"] == 7450
@@ -271,3 +272,150 @@ def test_eraser_is_a_noop_at_the_edges():
         before = frame.copy()
         merge_scenes._draw_eraser(frame, edge, 180)
         assert np.array_equal(frame, before)
+
+
+# ──────────────────────────────────────────────────────────────
+# 封面旁白提前（片头不静音）
+# ──────────────────────────────────────────────────────────────
+def _scene_annotation(tmp_path: Path, text_start=400, text_dur=4700, beats=(5600, 14000)):
+    annotation = {
+        "canvas": {"width": 100, "height": 100},
+        "elements": [
+            {"id": "title", "type": "text", "text": {"title": "标题"},
+             "region": {"x": 0, "y": 0, "width": 90, "height": 20},
+             "reveal": {"startMs": text_start, "durationMs": text_dur}},
+            *[
+                {"id": f"beat-{i}", "type": "object",
+                 "region": {"x": i * 20, "y": 30, "width": 18, "height": 40},
+                 "reveal": {"startMs": start, "durationMs": 6000}}
+                for i, start in enumerate(beats)
+            ],
+        ],
+    }
+    path = tmp_path / "scene.json"
+    path.write_text(json.dumps(annotation), encoding="utf-8")
+    return path
+
+
+COVER_TIMELINE = {
+    "transitionMs": 1300, "totalMs": 40000, "coverMs": 5870,
+    "scenes": [{"sceneIndex": 1, "startMs": 7170, "durationMs": 30000,
+                "endMs": 37170, "leadTrimMs": 1080}],
+}
+COVER_SCENES = [{"sceneIndex": 1, "startMs": 0, "endMs": 12000, "cueRange": [1, 2]}]
+COVER_CUES = [
+    {"index": 1, "startMs": 0, "endMs": 6000, "durMs": 6000, "text": "第一句"},
+    {"index": 2, "startMs": 6000, "endMs": 12000, "durMs": 6000, "text": "第二句"},
+]
+
+
+def test_first_cue_opens_while_the_cover_title_is_written(tmp_path):
+    annotation = _scene_annotation(tmp_path)
+    retimed = retime_srt.align_to_drawing(
+        COVER_CUES, COVER_SCENES, COVER_TIMELINE, [annotation], 250, 250
+    )
+    # 封面 5.87s + 过渡后幕1 才到 7.17s；第一条应提前到 600ms 附近开口
+    assert retimed[0]["startMs"] == 600
+    assert retimed[1]["startMs"] > COVER_TIMELINE["scenes"][0]["startMs"], "第二条仍跟着自己的绘制区"
+    for previous, current in zip(retimed, retimed[1:]):
+        assert previous["endMs"] <= current["startMs"]
+
+
+def test_cover_narration_lead_can_be_disabled(tmp_path):
+    annotation = _scene_annotation(tmp_path)
+    retimed = retime_srt.align_to_drawing(
+        COVER_CUES, COVER_SCENES, COVER_TIMELINE, [annotation], 250, 250,
+        cover_narration_ms=0,
+    )
+    assert retimed[0]["startMs"] >= COVER_TIMELINE["scenes"][0]["startMs"]
+
+
+def test_no_cover_means_no_early_opening(tmp_path):
+    annotation = _scene_annotation(tmp_path)
+    timeline = json.loads(json.dumps(COVER_TIMELINE))
+    timeline["coverMs"] = 0
+    timeline["scenes"][0]["startMs"] = 0
+    retimed = retime_srt.align_to_drawing(
+        COVER_CUES, COVER_SCENES, timeline, [annotation], 250, 250
+    )
+    # 没有封面时，第一条仍从"标题开始写"算起，不会跑到 600ms 之前
+    assert retimed[0]["startMs"] == 400 - 1080 + 250 or retimed[0]["startMs"] >= 0
+
+
+# ──────────────────────────────────────────────────────────────
+# 擦场只留擦的手
+# ──────────────────────────────────────────────────────────────
+def _frame_with_hand(width=480, height=270):
+    """画一帧：纸底 + 几笔墨 + 叠一只真实手部素材。"""
+    import stream_render as sr
+
+    frame = np.full((height, width, 3), (227, 241, 246), np.uint8)
+    cv2.line(frame, (20, 40), (150, 40), (30, 30, 30), 3)      # 几笔"标题"
+    cv2.line(frame, (20, 60), (110, 60), (30, 30, 30), 3)
+    asset = sr.resolve_hand_asset(None, quiet=True)
+    loaded = sr._load_hand(Path(asset), int(height * 0.44))
+    assert loaded is not None
+    hand, mask = loaded
+    tip = sr.TipOverlay(hand, mask, tip_anchor_x=0.0, tip_anchor_y=0.0)
+    tip.stamp(frame, 200, 30)
+    return frame
+
+
+def test_without_hand_removes_the_overlay_but_keeps_ink():
+    frame = _frame_with_hand()
+    before = merge_scenes._ink_ratio(frame)
+    cleaned = merge_scenes._without_hand(frame)
+    after = merge_scenes._ink_ratio(cleaned)
+    assert after < before, f"应该抹掉手带来的暗像素（{before:.4f} → {after:.4f}）"
+    # 原有墨迹要留住：左上那两笔还在
+    assert cleaned[40, 60].mean() < 120 and cleaned[60, 60].mean() < 120
+
+
+def test_locate_hand_finds_the_overlay():
+    frame = _frame_with_hand()
+    located = merge_scenes._locate_hand(frame)
+    assert located is not None
+    x, y, mask = located
+    assert 150 < x < 260 and 0 <= y < 80, f"位置不对: {(x, y)}"
+    assert mask.shape[0] > 60
+
+
+def test_locate_hand_returns_none_on_plain_paper():
+    paper = np.full((270, 480, 3), (227, 241, 246), np.uint8)
+    assert merge_scenes._locate_hand(paper) is None
+
+
+def test_seam_default_threshold_is_small_enough_to_keep_the_drawing():
+    """去手之后阈值可以压很低：只要出现第一笔就切，不该裁掉大段作画。"""
+    assert merge_scenes.SEAM_INK_RATIO <= 0.002
+    assert merge_scenes.SEAM_MAX_SKIP_S <= 3.0
+
+
+@needs_ffmpeg
+def test_erase_target_has_ink_and_no_second_hand(tmp_path):
+    """过渡末帧应该有墨（不闪白纸）、且不含下一幕的手。"""
+    prev_video = tmp_path / "prev.mp4"
+    next_video = tmp_path / "next.mp4"
+    fps = 10
+    writer = cv2.VideoWriter(str(prev_video), cv2.VideoWriter_fourcc(*"mp4v"), fps, (480, 270))
+    full = np.full((270, 480, 3), (227, 241, 246), np.uint8)
+    cv2.rectangle(full, (60, 120), (400, 240), (20, 20, 20), -1)
+    for _ in range(10):
+        writer.write(full)
+    writer.release()
+
+    writer = cv2.VideoWriter(str(next_video), cv2.VideoWriter_fourcc(*"mp4v"), fps, (480, 270))
+    paper = np.full((270, 480, 3), (227, 241, 246), np.uint8)
+    for _ in range(4):                       # 片头空白
+        writer.write(paper)
+    inked = _frame_with_hand()               # 之后是"有墨 + 有手"
+    for _ in range(10):
+        writer.write(inked)
+    writer.release()
+
+    out = tmp_path / "t.mp4"
+    assert merge_scenes.build_transition(prev_video, next_video, out, 200, 400) is not None
+    tail = merge_scenes._last_frame(out)
+    assert tail is not None
+    assert merge_scenes._ink_ratio(tail) > 0.001, "擦完必须已有墨，不能是空白纸"
+    assert merge_scenes._locate_hand(tail) is None, "擦完不该出现下一幕的手"

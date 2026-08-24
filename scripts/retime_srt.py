@@ -81,6 +81,7 @@ def align_to_drawing(
     lead_ms: int,
     tail_ms: int,
     text_lead: bool = True,
+    cover_narration_ms: int | None = None,
 ) -> list[dict]:
     """
     把每条字幕对齐到它对应区域的作画窗口：
@@ -91,10 +92,17 @@ def align_to_drawing(
     写标题也是在动笔，没必要干等 5–6 秒静音。它讲的正是本幕主旨，与标题同义，
     所以提前说不会和画面脱节；其余字幕仍各自跟着自己的绘制区。
     text_lead=False 时回到"文字区完全不参与配音对齐"的老行为。
+
+    有开场封面时（timeline 里 coverMs > 0），全片**第一条**字幕还会再往前提到
+    cover_narration_ms —— 封面正在手写主标，画面并不空，没必要让片头静音好几秒。
+    传 0 可以关掉这个提前。
     """
     merged = {s["sceneIndex"]: s for s in timeline["scenes"]}
+    cover_ms = float(timeline.get("coverMs", 0) or 0)
+    if cover_narration_ms is None:
+        cover_narration_ms = 600 if cover_ms > 0 else 0
     out: list[dict] = []
-    for scene, annotation_path in zip(scenes, annotations):
+    for scene_position, (scene, annotation_path) in enumerate(zip(scenes, annotations)):
         target = merged.get(scene["sceneIndex"])
         if target is None:
             raise SystemExit(f"[err] 时间线里没有第 {scene['sceneIndex']} 幕")
@@ -115,11 +123,16 @@ def align_to_drawing(
             base = target["startMs"] - trim
             start = base + reveal["startMs"] + lead_ms
             end = base + reveal["startMs"] + reveal["durationMs"] + tail_ms
+            floor = target["startMs"]
             if index == 0 and text_lead and texts:
                 # 提到"标题开始写"之后：幕首不再有大段静音
                 text_start = base + texts[0]["reveal"]["startMs"] + lead_ms
                 start = min(start, text_start)
-            start = max(target["startMs"], start)      # 不早于本幕在成片里的起点
+            if scene_position == 0 and index == 0 and cover_ms > 0 and cover_narration_ms > 0:
+                # 全片第一条：封面正在写标题时就可以开口，片头不用干等
+                start = min(start, float(cover_narration_ms))
+                floor = float(cover_narration_ms)
+            start = max(floor, start)                  # 不早于允许的最早起点
             out.append({
                 "startMs": int(round(start)),
                 "endMs": int(round(max(end, start + 800))),
@@ -146,6 +159,9 @@ def main(argv=None) -> int:
                         help="画完之后字幕仍可延续的时长（默认 250ms）")
     parser.add_argument("--no-text-lead", dest="text_lead", action="store_false",
                         help="不让每幕第一条字幕提前到标题书写期（默认允许，避免幕首静音）")
+    parser.add_argument("--cover-narration-ms", type=int, default=None,
+                        help="有封面时，全片第一条字幕最早可以在第几毫秒开口"
+                             "（默认 600；给 0 表示等封面放完再开口）")
     args = parser.parse_args(argv)
 
     cues = parse_srt(Path(args.srt).read_text(encoding="utf-8-sig"))
@@ -156,6 +172,7 @@ def main(argv=None) -> int:
         retimed = align_to_drawing(
             cues, scenes, timeline, [Path(a) for a in args.annotations],
             args.lead_ms, args.tail_ms, text_lead=args.text_lead,
+            cover_narration_ms=args.cover_narration_ms,
         )
         how = "按作画时序对齐" + ("（幕首随标题书写开口）" if args.text_lead else "（幕首等画完标题）")
     else:

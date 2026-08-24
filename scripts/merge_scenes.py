@@ -145,6 +145,7 @@ def _concat_filter(
 def build_transition(
     prev_video: Path, next_video: Path, out_path: Path,
     hold_ms: int, erase_ms: int, fps: float | None = None,
+    strip_next_hand: bool = True,
 ) -> Path | None:
     """
     造一段「上一幕停留 → 擦掉 → 露出下一幕起始纸面」的过渡片段。
@@ -152,12 +153,13 @@ def build_transition(
     没有它的话，幕与幕之间就是硬切回空白画布：上一幕刚画完就瞬间消失，
     观众（和已经开口的旁白）会撞上 1–2 秒空白。这里的做法是：
       1. 上一幕最后一帧停留 hold_ms（≥0.5s，用户要求的下限）
-      2. 一块橡皮从左到右擦过，把画面逐列换成下一幕的首帧（干净纸面）
+      2. 一块橡皮从左到右擦过，把画面逐列换成下一幕第一帧有墨的画面
+         （并抹掉那一帧里下一幕自己的手，免得画面上同时出现两只手）
     擦除用下一幕首帧作为目标，所以过渡结束时画面正好等于下一幕的起点，
     拼接处不会闪。
     """
     prev_frame = _last_frame(prev_video)
-    next_frame = _first_frame(next_video)
+    next_frame = _first_frame(next_video, strip_hand=strip_next_hand)
     if prev_frame is None or next_frame is None:
         return None
     if prev_frame.shape != next_frame.shape:
@@ -318,10 +320,109 @@ def _write_timeline(
     print(f"  时间线已写出: {path}（过渡 {transition_ms}ms/处，总长 {payload['totalMs'] / 1000:.2f}s）")
 
 
-# 擦除要擦到"已经看得见内容"的一帧：纯纸面（甚至只有一支手）都会像闪回白板。
-# 阈值按暗像素占比算——实测手部覆盖约贡献 0.11%~0.16%，标题写到第一行时约 0.45%。
-SEAM_INK_RATIO = 0.0045
+# 擦除要擦到"已经看得见内容"的一帧：纯纸面会像闪回白板。
+# 判定前先把下一幕的手抹掉（见 _without_hand），所以阈值可以压得很低——
+# 只要出现第一笔墨就行，几乎不裁掉作画过程。
+SEAM_INK_RATIO = 0.0012
 SEAM_MAX_SKIP_S = 2.5
+# 手部模板的候选高度（相对画面高）：渲染默认 493px@1080 长边，分镜常用 260
+_HAND_SCALES = (0.28, 0.34, 0.40, 0.44, 0.48, 0.55, 0.62, 0.72, 0.84)
+# 归一化匹配误差阈值。实测：真的有手 ≈1700；纯纸面 ≈16700、去过手 ≈14000、
+# 大片黑块 ≈15500 —— 差距很大，取中间偏低的 6000 判"有手"。
+_HAND_MATCH_SURE = 2500
+_HAND_MATCH_LIMIT = 6000
+_hand_cache: dict[str, object] = {}
+
+
+def _hand_templates(frame_height: int) -> list[tuple["np.ndarray", "np.ndarray"]]:
+    """按候选高度预生成手部模板（BGR + 0/1 蒙版）。找不到素材就返回空表。"""
+    key = f"templates:{frame_height}"
+    if key in _hand_cache:
+        return _hand_cache[key]                      # type: ignore[return-value]
+    templates: list[tuple[np.ndarray, np.ndarray]] = []
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import stream_render as sr
+
+        asset = sr.resolve_hand_asset(None, quiet=True)
+        if asset is not None and Path(asset).exists():
+            for ratio in _HAND_SCALES:
+                target = int(frame_height * ratio)
+                if target < 40:
+                    continue
+                loaded = sr._load_hand(Path(asset), target)
+                if loaded is None:
+                    continue
+                hand, mask = loaded
+                templates.append((hand, (mask > 0.5).astype(np.uint8)))
+    except Exception as exc:                          # 素材缺失/读取失败都不该影响合并
+        print(f"  [warn] 无法加载手部素材用于擦场去手: {exc}")
+    _hand_cache[key] = templates
+    return templates
+
+
+def _locate_hand(frame: "np.ndarray") -> tuple[int, int, "np.ndarray"] | None:
+    """
+    在一帧里找出叠加的手（模板就是渲染用的那张素材，所以能精确匹配）。
+    返回 (x, y, 0/1 蒙版)；匹配不上返回 None。命中的缩放比会被缓存复用。
+    """
+    height, width = frame.shape[:2]
+    templates = _hand_templates(height)
+    if not templates:
+        return None
+    cached = _hand_cache.get("scale_index")
+    order = list(range(len(templates)))
+    if isinstance(cached, int) and 0 <= cached < len(templates):
+        order = [cached] + [i for i in order if i != cached]
+
+    best = None
+    for index in order:
+        hand, mask = templates[index]
+        if hand.shape[0] >= height or hand.shape[1] >= width:
+            continue
+        mask3 = np.repeat(mask[:, :, None], 3, axis=2) * 255
+        result = cv2.matchTemplate(frame, hand, cv2.TM_SQDIFF, mask=mask3)
+        score, _, location, _ = cv2.minMaxLoc(result)
+        normalized = score / max(1.0, float(mask.sum()))
+        if best is None or normalized < best[0]:
+            best = (normalized, index, location)
+        if normalized < _HAND_MATCH_SURE:            # 已经是明显命中，不用再试其它比例
+            break
+    if best is None or best[0] > _HAND_MATCH_LIMIT:  # 误差太大：这一帧大概没有手
+        return None
+    _hand_cache["scale_index"] = best[1]
+    _, index, (x, y) = best
+    return x, y, templates[index][1]
+
+
+def _paper_color(frame: "np.ndarray") -> "np.ndarray":
+    patch = max(4, min(frame.shape[:2]) // 40)
+    corners = np.concatenate([
+        frame[:patch, :patch].reshape(-1, 3), frame[:patch, -patch:].reshape(-1, 3),
+        frame[-patch:, :patch].reshape(-1, 3), frame[-patch:, -patch:].reshape(-1, 3),
+    ])
+    return np.median(corners, axis=0).astype(np.uint8)
+
+
+def _without_hand(frame: "np.ndarray") -> "np.ndarray":
+    """
+    把帧里叠加的手抹成纸色。
+
+    擦场时如果直接擦到下一幕的真实帧，画面上会同时出现"擦的手"和"下一幕正在写字的手"
+    ——两只手很怪。这里把目标帧的手去掉，等擦完播到正片时手再自然出现。
+    手底下压着的那一两笔会晚 0.7 秒才露出来，肉眼几乎看不出。
+    """
+    located = _locate_hand(frame)
+    if located is None:
+        return frame
+    x, y, mask = located
+    cleaned = frame.copy()
+    height, width = mask.shape
+    region = cleaned[y:y + height, x:x + width]
+    # 稍微膨胀，免得留下一圈描边
+    grown = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    region[grown[: region.shape[0], : region.shape[1]] > 0] = _paper_color(frame)
+    return cleaned
 
 
 def _ink_ratio(frame) -> float:
@@ -331,6 +432,7 @@ def _ink_ratio(frame) -> float:
 
 def _lead_blank_seconds(
     path: Path, min_ink_ratio: float = SEAM_INK_RATIO, cap_s: float = SEAM_MAX_SKIP_S,
+    strip_hand: bool = True,
 ) -> tuple[object, float]:
     """
     返回「第一帧看得见内容的画面」以及要跳过的片头秒数。
@@ -344,15 +446,31 @@ def _lead_blank_seconds(
     first = None
     content = None
     index = 0
+    hand_share: float | None = None       # 手自身贡献的暗像素占比（标定一次即可）
     while True:
         ok, frame = capture.read()
         if not ok:
             break
         if first is None:
-            first = frame
-        if _ink_ratio(frame) >= min_ink_ratio:
-            content = frame
-            break
+            first = _without_hand(frame) if strip_hand else frame
+        raw = _ink_ratio(frame)
+        if raw >= min_ink_ratio:
+            if not strip_hand:
+                content = frame
+                break
+            # 逐帧去手太慢：先用一帧标定"手占多少暗像素"，之后只做减法粗筛，
+            # 只有粗筛通过才真去手确认。
+            if hand_share is None:
+                cleaned = _without_hand(frame)
+                hand_share = max(0.0, raw - _ink_ratio(cleaned))
+                if _ink_ratio(cleaned) >= min_ink_ratio:
+                    content = cleaned
+                    break
+            elif raw - hand_share >= min_ink_ratio:
+                cleaned = _without_hand(frame)
+                if _ink_ratio(cleaned) >= min_ink_ratio:
+                    content = cleaned
+                    break
         index += 1
         if index / fps >= cap_s:
             break
@@ -361,8 +479,9 @@ def _lead_blank_seconds(
     return (content if content is not None else first), skip
 
 
-def _first_frame(path: Path):
-    frame, _skip = _lead_blank_seconds(path)
+def _first_frame(path: Path, strip_hand: bool = True):
+    """擦除目标：下一幕第一帧有墨的画面（默认已抹掉它自己的手）。"""
+    frame, _skip = _lead_blank_seconds(path, strip_hand=strip_hand)
     return frame
 
 
@@ -466,6 +585,8 @@ def main(argv=None) -> int:
                         "调大 = 擦到更实的画面，但会多跳过一点作画")
     p.add_argument("--seam-max-skip-s", type=float, default=SEAM_MAX_SKIP_S,
                    help=f"每幕片头最多裁掉多少秒（默认 {SEAM_MAX_SKIP_S}）")
+    p.add_argument("--keep-next-hand", action="store_true",
+                   help="擦场时保留下一幕的手（默认抹掉，避免画面上出现两只手）")
     p.add_argument("--timeline-out", default=None,
                    help="把每幕在合并结果中的起始时间写成 JSON，供 SRT 重定时使用")
     args = p.parse_args(argv)
@@ -489,7 +610,8 @@ def main(argv=None) -> int:
         return 1
     for index, src in enumerate(inputs):
         _frame, skip = _lead_blank_seconds(
-            src, min_ink_ratio=args.seam_ink_ratio, cap_s=args.seam_max_skip_s
+            src, min_ink_ratio=args.seam_ink_ratio, cap_s=args.seam_max_skip_s,
+            strip_hand=not args.keep_next_hand,
         )
         # 有封面时第一幕也要去掉片头空白（它前面已经有封面，不再是全片开头）
         first_keeps_lead = index == 0 and cover is None
@@ -530,7 +652,10 @@ def main(argv=None) -> int:
             if index + 1 >= len(inputs):
                 break
             piece = temp_dir / f"transition-{index + 1:02d}.mp4"
-            built = build_transition(path, inputs[index + 1], piece, hold_ms, erase_ms)
+            built = build_transition(
+                path, inputs[index + 1], piece, hold_ms, erase_ms,
+                strip_next_hand=not args.keep_next_hand,
+            )
             if built is None:
                 print(f"  [warn] 第 {index + 1}→{index + 2} 幕之间的过渡生成失败，直接硬切")
                 continue
