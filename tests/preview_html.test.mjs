@@ -120,11 +120,11 @@ assert.equal(t.isText(null), false);
 
 // text 可以是字符串，也可以是对象；bullets 允许写成单个字符串
 // 注意：vm 里造出来的对象跨 realm，不能用 deepStrictEqual 比原型，逐字段比即可
-const lines = e => { const r = t.textLines(e); return [r.title, [...r.bullets].join('|')]; };
-assert.deepEqual(lines({ text: '只有标题' }), ['只有标题', '']);
-assert.deepEqual(lines({ text: { title: '标题', bullets: ['一', '二'] } }), ['标题', '一|二']);
-assert.deepEqual(lines({ text: { bullets: '就一条' } }), ['', '就一条']);
-assert.deepEqual(lines({}), ['', '']);
+const lines = e => { const r = t.textLines(e); return [r.title, r.subtitle, [...r.bullets].join('|')]; };
+assert.deepEqual(lines({ text: '只有标题' }), ['只有标题', '', '']);
+assert.deepEqual(lines({ text: { title: '标题', subtitle: '副标', bullets: ['一', '二'] } }), ['标题', '副标', '一|二']);
+assert.deepEqual(lines({ text: { bullets: '就一条' } }), ['', '', '就一条']);
+assert.deepEqual(lines({}), ['', '', '']);
 
 // drawTextBlock 要真的往画布上写字：用一个记录调用的假 ctx
 function recordingCtx() {
@@ -143,11 +143,11 @@ function recordingCtx() {
 const textElement = {
   type: 'text',
   region: { x: 20, y: 20, width: 400, height: 160 },
-  text: { title: '本幕标题', bullets: ['要点一', '要点二'] },
+  text: { title: '本幕标题', subtitle: '封面副标', bullets: ['要点一', '要点二'] },
 };
 const ctx1 = recordingCtx();
 t.drawTextBlock(ctx1, textElement);
-assert.deepEqual([...ctx1.calls.fillText], ['本幕标题', '要点一', '要点二'], '标题与要点都要画出来');
+assert.deepEqual([...ctx1.calls.fillText], ['本幕标题', '封面副标', '要点一', '要点二'], '标题、副标与要点都要画出来');
 assert.ok(ctx1.calls.fillRect >= 3, '标题下划线 + 每条要点的短横');
 assert.ok(ctx1.calls.clipped, '必须按区域裁剪，文字不能溢出区域');
 assert.ok(ctx1.calls.fonts.some(f => /Kaiti|WenKai/.test(f)), '优先楷体/手写体字族');

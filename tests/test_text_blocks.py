@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import inspect
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,12 @@ pytest.importorskip("PIL", reason="需要 Pillow")
 import numpy as np  # noqa: E402
 
 import text_render as tr  # noqa: E402
+
+
+def test_text_seed_does_not_use_process_salted_hash():
+    source = inspect.getsource(tr.render_text_block)
+    assert "hashlib.sha256" in source
+    assert "seed = hash(" not in source
 from annotation_schema import validate_annotation  # noqa: E402
 
 

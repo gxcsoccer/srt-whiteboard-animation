@@ -68,10 +68,11 @@ def test_plan_windows_never_overlaps_even_if_srt_does():
     assert first_start + first_window <= cues[1]["startMs"]
 
 
-def test_plan_windows_keeps_a_floor():
+def test_plan_windows_dense_cues_never_cross_next_start():
     cues = _cues((0, 100), (150, 400))
     windows = mux.plan_windows(cues, total_ms=1000)
-    assert all(window >= mux.MIN_WINDOW_MS for _, window in windows)
+    assert windows[0][1] == 30
+    assert windows[0][0] + windows[0][1] < cues[1]["startMs"]
 
 
 def test_plan_windows_uses_video_length_for_last_cue():
@@ -256,6 +257,19 @@ def test_end_to_end_mux_adds_audio_track(tmp_path, monkeypatch):
     with wave.open(str(wav)) as handle:
         assert handle.getnchannels() == 1
         assert handle.getframerate() == mux.SAMPLE_RATE
+
+
+@needs_ffmpeg
+def test_keep_wav_creates_missing_output_parent(tmp_path, monkeypatch):
+    srt = tmp_path / "a.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    video = tmp_path / "silent.mp4"
+    _silent_video(video, 9.5)
+    monkeypatch.setattr(mux, "synthesize_cue", _fake_tts(0.4))
+    out = tmp_path / "new" / "nested" / "narrated.mp4"
+    mux.mux_narration(srt, video, out, keep_wav=True)
+    assert out.exists()
+    assert out.with_name(out.stem + ".narration.wav").exists()
 
 
 @needs_ffmpeg

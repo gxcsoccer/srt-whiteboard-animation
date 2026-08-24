@@ -334,6 +334,11 @@ _HAND_MATCH_LIMIT = 6000
 _hand_cache: dict[str, object] = {}
 
 
+def _should_trim_lead(skip_s: float, first_keeps_lead: bool, ffmpeg_available: bool) -> bool:
+    """只要探测到空白 lead 就裁掉；极短 lead 也不能留给转场制造回闪。"""
+    return not first_keeps_lead and skip_s > 0 and ffmpeg_available
+
+
 def _hand_templates(frame_height: int) -> list[tuple["np.ndarray", "np.ndarray"]]:
     """按候选高度预生成手部模板（BGR + 0/1 蒙版）。找不到素材就返回空表。"""
     key = f"templates:{frame_height}"
@@ -615,7 +620,7 @@ def main(argv=None) -> int:
         )
         # 有封面时第一幕也要去掉片头空白（它前面已经有封面，不再是全片开头）
         first_keeps_lead = index == 0 and cover is None
-        if first_keeps_lead or skip < 0.12 or ffmpeg_bin is None:
+        if not _should_trim_lead(skip, first_keeps_lead, ffmpeg_bin is not None):
             trimmed_inputs.append(src)
             lead_trims.append(0.0)
             continue

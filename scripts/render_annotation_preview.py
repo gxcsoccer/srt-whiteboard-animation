@@ -55,7 +55,6 @@ FONT_CANDIDATES = (
     "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
     "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
     "/usr/share/fonts/truetype/arphic/uming.ttc",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # 无中文，最后兜底
 )
 
 # fontconfig 查询用的字体族名（Linux/macOS 装了 fc-match 时才生效）
@@ -67,8 +66,18 @@ FC_FAMILIES = (
     "WenQuanYi Micro Hei",
     "PingFang SC",
     "Microsoft YaHei",
-    "sans-serif",
 )
+
+
+def _supports_cjk(path: str) -> bool:
+    """用两个不同汉字的字形判断字体是否真的包含 CJK，而不是 tofu 占位框。"""
+    try:
+        font = ImageFont.truetype(path, 24)
+        masks = [font.getmask(char, mode="L") for char in ("中", "文")]
+        signatures = [(mask.size, mask.getbbox(), bytes(mask)) for mask in masks]
+        return all(mask.getbbox() is not None for mask in masks) and signatures[0] != signatures[1]
+    except (OSError, ValueError):
+        return False
 
 
 def _fc_match() -> str | None:
@@ -82,7 +91,7 @@ def _fc_match() -> str | None:
         except (OSError, subprocess.SubprocessError):
             return None  # 系统没有 fontconfig，不必再试其它族名
         path = result.stdout.strip()
-        if result.returncode == 0 and path and Path(path).exists():
+        if result.returncode == 0 and path and Path(path).exists() and _supports_cjk(path):
             return path
     return None
 
@@ -97,7 +106,7 @@ def find_font_file(explicit: str | None = None) -> str | None:
             raise FileNotFoundError(f"指定的字体文件不存在: {explicit}")
         return explicit
     for candidate in FONT_CANDIDATES:
-        if Path(candidate).exists():
+        if Path(candidate).exists() and _supports_cjk(candidate):
             return candidate
     return _fc_match()
 
@@ -107,6 +116,8 @@ def load_fonts(explicit: str | None = None) -> tuple[ImageFont.ImageFont, ImageF
     font_file = find_font_file(explicit)
     if font_file:
         try:
+            if not _supports_cjk(font_file):
+                print(f"  [warn] 字体不含可用中文字形({font_file})，中文标签可能显示为方块。")
             return (
                 ImageFont.truetype(font_file, 28),
                 ImageFont.truetype(font_file, 18),
@@ -139,7 +150,8 @@ def render_preview(
     image_path: str, annotation_path: str, output_path: str, font_path: str | None = None
 ) -> None:
     data = load_annotation(annotation_path)
-    image = Image.open(image_path).convert("RGBA")
+    with Image.open(image_path) as source:
+        image = source.convert("RGBA")
     report = ensure_valid(
         data, image_size=image.size, source=Path(annotation_path).name
     )

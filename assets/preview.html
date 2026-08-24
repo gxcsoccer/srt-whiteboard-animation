@@ -175,33 +175,38 @@ const els = () => S.cfg ? S.cfg.elements : [];
 const isText = e => !!e && e.type === 'text';
 const textLines = e => {
   const t = e.text || {};
-  if (typeof t === 'string') return { title: t, bullets: [] };
-  return { title: t.title || '', bullets: Array.isArray(t.bullets) ? t.bullets : (t.bullets ? [t.bullets] : []) };
+  if (typeof t === 'string') return { title: t, subtitle: '', bullets: [] };
+  return { title: t.title || '', subtitle: t.subtitle || '', bullets: Array.isArray(t.bullets) ? t.bullets : (t.bullets ? [t.bullets] : []) };
 };
 // 预览台里的文字区是"代理"：字形/抖动与成片不完全一致，位置与时序一致。
 function drawTextBlock(target, e, progress) {
-  const r = e.region, { title, bullets } = textLines(e);
-  const lines = (title ? [title] : []).concat(bullets);
+  const r = e.region, { title, subtitle, bullets } = textLines(e);
+  const lines = (title ? [{ text:title, kind:'title' }] : [])
+    .concat(subtitle ? [{ text:subtitle, kind:'subtitle' }] : [])
+    .concat(bullets.map(text => ({ text, kind:'bullet' })));
   if (!lines.length) return;
-  const count = bullets.length + (title ? 1.45 : 0) + (lines.length - 1) * 0.55;
+  const count = bullets.length + (title ? 1.45 : 0) + (subtitle ? 0.9 : 0) + (lines.length - 1) * 0.55;
   let size = Math.max(11, Math.floor(r.height / Math.max(1, count)));
-  const longest = Math.max(title.length * 1.45, ...bullets.map(b => b.length), 1);
+  const longest = Math.max(title.length * 1.45, subtitle.length * 0.9, ...bullets.map(b => b.length), 1);
   size = Math.min(size, Math.floor(r.width / (longest * 1.04)));
   const titleSize = Math.floor(size * 1.45);
   target.save();
   target.beginPath(); target.rect(r.x, r.y, r.width * (progress === undefined ? 1 : progress), r.height); target.clip();
   target.fillStyle = '#1d1d1d'; target.textBaseline = 'top';
   let y = r.y;
-  lines.forEach((line, i) => {
-    const isTitle = !!title && i === 0, fs = isTitle ? titleSize : size;
+  lines.forEach(({ text: line, kind }) => {
+    const isTitle = kind === 'title', isSubtitle = kind === 'subtitle';
+    const fs = isTitle ? titleSize : (isSubtitle ? Math.max(11, Math.floor(size * 0.9)) : size);
     target.font = `${isTitle ? '600 ' : ''}${fs}px "Kaiti SC","LXGW WenKai","STKaiti","Microsoft YaHei",serif`;
-    if (!isTitle) {
+    if (!isTitle && !isSubtitle) {
       target.fillRect(r.x, y + fs * 0.55, Math.max(6, fs * 0.44), Math.max(2, fs / 12));
       target.fillText(line, r.x + fs * 0.7, y);
-    } else {
+    } else if (isTitle) {
       target.fillText(line, r.x, y);
       target.fillRect(r.x, y + fs * 1.12, Math.min(r.width, target.measureText(line).width), Math.max(2, fs / 14));
       y += fs * 0.2;
+    } else {
+      target.fillText(line, r.x, y);
     }
     y += fs * 1.55;
   });

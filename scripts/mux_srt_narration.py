@@ -41,7 +41,6 @@ from parse_srt import parse_srt  # noqa: E402
 SAMPLE_RATE = 24000          # edge-tts 输出 24kHz，直接沿用避免重采样
 DEFAULT_VOICE = "zh-CN-YunxiNeural"   # 云希：中文男声，免费无 key
 DEFAULT_GAP_MS = 120         # 相邻旁白之间至少留的呼吸间隔
-MIN_WINDOW_MS = 400          # 窗口再小也不至于把语音压成噪音
 MAX_ATEMPO = 2.0             # 单个 atempo 的稳妥上限，超过就串联多级
 SPEED_WARN = 1.35            # 加速超过这个倍数就提醒（字幕可能写得太满）
 
@@ -106,7 +105,8 @@ def plan_windows(
             limit = int(cues[index + 1]["startMs"])
         else:
             limit = int(max(total_ms, cue["endMs"]))
-        window = max(MIN_WINDOW_MS, limit - start - gap_ms)
+        # 密集字幕的真实空间可能小于 MIN_WINDOW_MS；不能为保底窗长越过下一条起点。
+        window = max(1, limit - start - gap_ms)
         windows.append((start, window))
     return windows
 
@@ -333,6 +333,7 @@ def mux_narration(
             output_path.with_suffix("").with_name(output_path.stem + ".narration.wav")
             if keep_wav else tmp_dir / "narration.wav"
         )
+        wav_path.parent.mkdir(parents=True, exist_ok=True)
         write_wav(wav_path, bed)
         final = mux(video_path, wav_path, output_path)
         if keep_wav:

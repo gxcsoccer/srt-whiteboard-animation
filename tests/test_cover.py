@@ -114,13 +114,13 @@ def test_cover_annotation_passes_validation(cover_board):
     assert not [w for w in report.warnings if "文字区" in w], report.warnings
 
 
-def test_cover_warns_when_top_band_is_too_short(tmp_path, capsys):
+def test_cover_rejects_top_band_that_would_overlap_accent(tmp_path):
     image = np.full((941, 1672, 3), (215, 235, 245), np.uint8)
     cv2.circle(image, (800, 120), 60, (20, 20, 20), -1)      # 内容顶到最上面
     board = tmp_path / "bad-cover.png"
     cv2.imwrite(str(board), image)
-    make_cover.build_cover(board, TITLE, SUBTITLE)
-    assert "标题区" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="顶部留白不足"):
+        make_cover.build_cover(board, TITLE, SUBTITLE)
 
 
 def test_cover_cli_writes_json_and_no_cover_skips(cover_board, tmp_path, capsys):
@@ -316,6 +316,7 @@ def test_first_cue_opens_while_the_cover_title_is_written(tmp_path):
     )
     # 封面 5.87s + 过渡后幕1 才到 7.17s；第一条应提前到 600ms 附近开口
     assert retimed[0]["startMs"] == 600
+    assert retimed[0]["endMs"] == 6600, "封面提前开口后仍应保留原字幕时长"
     assert retimed[1]["startMs"] > COVER_TIMELINE["scenes"][0]["startMs"], "第二条仍跟着自己的绘制区"
     for previous, current in zip(retimed, retimed[1:]):
         assert previous["endMs"] <= current["startMs"]
@@ -328,6 +329,20 @@ def test_cover_narration_lead_can_be_disabled(tmp_path):
         cover_narration_ms=0,
     )
     assert retimed[0]["startMs"] >= COVER_TIMELINE["scenes"][0]["startMs"]
+
+
+def test_shift_by_timeline_subtracts_lead_trim():
+    shifted = retime_srt.shift_by_timeline(
+        COVER_CUES, COVER_SCENES, COVER_TIMELINE
+    )
+    assert shifted[0]["startMs"] == 7170 - 1080
+
+
+def test_align_rejects_annotation_count_mismatch(tmp_path):
+    with pytest.raises(SystemExit, match="annotation 数量"):
+        retime_srt.align_to_drawing(
+            COVER_CUES, COVER_SCENES, COVER_TIMELINE, [], 250, 250
+        )
 
 
 def test_no_cover_means_no_early_opening(tmp_path):
@@ -389,6 +404,11 @@ def test_seam_default_threshold_is_small_enough_to_keep_the_drawing():
     """去手之后阈值可以压很低：只要出现第一笔就切，不该裁掉大段作画。"""
     assert merge_scenes.SEAM_INK_RATIO <= 0.002
     assert merge_scenes.SEAM_MAX_SKIP_S <= 3.0
+
+
+def test_short_detected_lead_is_still_trimmed_to_prevent_seam_flash():
+    assert merge_scenes._should_trim_lead(0.05, first_keeps_lead=False, ffmpeg_available=True)
+    assert not merge_scenes._should_trim_lead(0.05, first_keeps_lead=True, ffmpeg_available=True)
 
 
 @needs_ffmpeg

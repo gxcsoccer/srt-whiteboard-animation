@@ -66,7 +66,14 @@ def build_cover(
     margin_x = int(width * (1 - TITLE_WIDTH_RATIO) / 2)
     margin_y = int(height * 0.05)
     title_bottom = max(margin_y + 80, y0 - pad - 8)
+    accent_top = max(0, y0 - pad)
+    title_bottom = min(title_bottom, accent_top)
     title_height = title_bottom - margin_y
+    if title_height < 60:
+        raise SystemExit(
+            f"[err] 封面顶部留白不足：标题区只有 {title_height}px，且会与小黑区域重叠。"
+            "请把封面主体下移，至少留出 60px 标题区。"
+        )
     floor = int(np.ceil(MIN_TITLE_OUTPUT_PX / (CAP_LONG_EDGE / width)))
     if title_height < floor:
         print(f"  [warn] 标题区仅 {title_height}px（输出约 "
@@ -83,7 +90,7 @@ def build_cover(
             "text": {"title": title, "subtitle": subtitle},
             "region": {
                 "x": margin_x, "y": margin_y,
-                "width": int(width * TITLE_WIDTH_RATIO), "height": max(60, title_height),
+                "width": int(width * TITLE_WIDTH_RATIO), "height": title_height,
             },
             "reveal": {
                 "direction": "left_to_right", "startMs": lead_ms,

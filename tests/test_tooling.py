@@ -50,6 +50,16 @@ def test_load_fonts_falls_back_when_nothing_is_installed(monkeypatch, capsys):
     assert "未找到可用的中文字体" in capsys.readouterr().out
 
 
+def test_auto_font_candidates_skip_non_cjk_fallback(monkeypatch, tmp_path):
+    module = _preview_module()
+    fake = tmp_path / "latin.ttf"
+    fake.write_bytes(b"not-a-real-font")
+    monkeypatch.setattr(module, "FONT_CANDIDATES", (str(fake),))
+    monkeypatch.setattr(module, "_supports_cjk", lambda _: False)
+    monkeypatch.setattr(module, "_fc_match", lambda: None)
+    assert module.find_font_file() is None
+
+
 def test_preview_image_is_written(tmp_path):
     module = _preview_module()
     out = tmp_path / "preview.png"

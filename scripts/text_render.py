@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from dataclasses import dataclass, field
@@ -330,7 +331,8 @@ def render_text_block(
 
     resolved = font_path or font_lookup.find_font_file(prefer_handwriting=True)
     title_size, bullet_size = _auto_sizes(spec, width, height)
-    seed = hash(("|".join(spec.lines), width, height)) & 0xFFFFFFFF
+    seed_material = f"{'|'.join(spec.lines)}\0{width}\0{height}".encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:4], "big")
 
     canvas = np.full((height, width), PAPER, dtype=np.uint8)
     strokes: list[list[tuple[int, int]]] = []

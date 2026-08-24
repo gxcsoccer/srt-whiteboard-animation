@@ -62,7 +62,8 @@ def shift_by_timeline(
         target = merged.get(scene["sceneIndex"])
         if target is None:
             raise SystemExit(f"[err] 时间线里没有第 {scene['sceneIndex']} 幕")
-        offset = target["startMs"] - scene["startMs"]
+        offset = (target["startMs"] - float(target.get("leadTrimMs", 0) or 0)
+                  - scene["startMs"])
         first, last = scene["cueRange"]
         for cue in cues[first - 1:last]:
             out.append({
@@ -98,6 +99,11 @@ def align_to_drawing(
     传 0 可以关掉这个提前。
     """
     merged = {s["sceneIndex"]: s for s in timeline["scenes"]}
+    if len(annotations) != len(scenes):
+        raise SystemExit(
+            f"[err] annotation 数量({len(annotations)})与场景数量({len(scenes)})不一致，"
+            "拒绝静默丢弃场景"
+        )
     cover_ms = float(timeline.get("coverMs", 0) or 0)
     if cover_narration_ms is None:
         cover_narration_ms = 600 if cover_ms > 0 else 0
@@ -132,6 +138,8 @@ def align_to_drawing(
                 # 全片第一条：封面正在写标题时就可以开口，片头不用干等
                 start = min(start, float(cover_narration_ms))
                 floor = float(cover_narration_ms)
+                cue_duration = max(800.0, float(cue["endMs"] - cue["startMs"]))
+                end = min(end, start + cue_duration)
             start = max(floor, start)                  # 不早于允许的最早起点
             out.append({
                 "startMs": int(round(start)),
