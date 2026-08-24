@@ -202,14 +202,50 @@ def test_align_to_drawing_puts_narration_after_the_pen_starts(tmp_path):
         path.write_text(json.dumps(annotation), encoding="utf-8")
         annotations.append(path)
 
-    retimed = retime_srt.align_to_drawing(
-        CUES, SCENES, TIMELINE, annotations, lead_ms=250, tail_ms=250
+    # --no-text-lead：幕首等标题写完，第 1 条对齐到绘制区 1
+    strict = retime_srt.align_to_drawing(
+        CUES, SCENES, TIMELINE, annotations, lead_ms=250, tail_ms=250, text_lead=False
     )
-    assert len(retimed) == 4
+    assert len(strict) == 4
     # 第 1 幕：区域 2000/4000 → 2250 / 4250；第 2 幕整体 +7000
-    assert [c["startMs"] for c in retimed] == [2250, 4250, 9250, 11250]
-    assert retimed[0]["startMs"] > 0, "开场不能立刻说话——先落笔"
-    for previous, current in zip(retimed, retimed[1:]):
+    assert [c["startMs"] for c in strict] == [2250, 4250, 9250, 11250]
+    assert strict[0]["startMs"] > 0, "开场不能立刻说话——先落笔"
+    for previous, current in zip(strict, strict[1:]):
+        assert previous["endMs"] <= current["startMs"], "重定时后不能重叠"
+
+
+def test_text_lead_removes_the_silent_gap_at_scene_start(tmp_path):
+    """默认允许幕首字幕随标题书写开口：写标题也是在动笔，不该干等 5–6 秒。"""
+    annotations = []
+    for index in range(len(SCENES)):
+        annotation = {
+            "canvas": {"width": 100, "height": 100},
+            "elements": [
+                {"id": "title", "type": "text", "text": {"title": "标题"},
+                 "region": {"x": 0, "y": 0, "width": 50, "height": 20},
+                 "reveal": {"startMs": 400, "durationMs": 5000}},     # 标题写 5 秒
+                {"id": "a", "type": "object", "region": {"x": 0, "y": 30, "width": 40, "height": 40},
+                 "reveal": {"startMs": 5900, "durationMs": 1800}},
+                {"id": "b", "type": "object", "region": {"x": 50, "y": 30, "width": 40, "height": 40},
+                 "reveal": {"startMs": 8000, "durationMs": 1800}},
+            ],
+        }
+        path = tmp_path / f"scene-{index + 1}.json"
+        path.write_text(json.dumps(annotation), encoding="utf-8")
+        annotations.append(path)
+
+    lead = retime_srt.align_to_drawing(CUES, SCENES, TIMELINE, annotations, 250, 250)
+    strict = retime_srt.align_to_drawing(
+        CUES, SCENES, TIMELINE, annotations, 250, 250, text_lead=False
+    )
+    # 每幕第一条：提前到 标题起点 + lead = 650；老行为要等到 6150
+    assert lead[0]["startMs"] == 650
+    assert strict[0]["startMs"] == 6150
+    assert lead[2]["startMs"] == 7000 + 650, "第 2 幕同样提前"
+    # 幕首静音被消掉，且非首条仍跟着自己的绘制区
+    assert lead[0]["startMs"] < strict[0]["startMs"] - 4000
+    assert lead[1]["startMs"] == strict[1]["startMs"]
+    for previous, current in zip(lead, lead[1:]):
         assert previous["endMs"] <= current["startMs"], "重定时后不能重叠"
 
 

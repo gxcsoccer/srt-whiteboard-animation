@@ -167,7 +167,8 @@ python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 
   --timeline-out timeline.json [--hold-ms 600] [--erase-ms 700]
 ```
 
-按成片时间线重定时字幕（插过渡后必须做，否则旁白比画面早开口）：
+按成片时间线重定时字幕（插过渡后必须做，否则旁白比画面早开口；每幕第一条会随标题书写开口，
+避免幕首静音，`--no-text-lead` 可关）：
 
 ```bash
 python scripts/retime_srt.py --srt 原始.srt --scenes scenes.json --timeline timeline.json \

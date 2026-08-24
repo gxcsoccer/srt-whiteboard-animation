@@ -11,7 +11,9 @@ SRT 重定时：让字幕/旁白跟上合并后的真实时间线
 
 也可以只做「按作画时序对齐」：用 --annotations 指定各幕的 annotation.json，
 每条字幕会被对齐到它对应区域的实际作画窗口（区域 startMs/durationMs），
-这样旁白必然落在"这一笔正在画"的时间里。
+这样旁白必然落在"这一笔正在画"的时间里。每幕第一条字幕默认提前到
+文字区开始书写之后（写标题也是在动笔），避免幕首 5–6 秒静音；
+不想这样就加 --no-text-lead。
 
 用法：
   python retime_srt.py --srt 原始.srt --scenes scenes.json --timeline timeline.json \\
@@ -77,12 +79,17 @@ def align_to_drawing(
     annotations: list[Path],
     lead_ms: int,
     tail_ms: int,
+    text_lead: bool = True,
 ) -> list[dict]:
     """
     把每条字幕对齐到它对应区域的作画窗口：
       字幕起点 = 幕起点 + 区域 startMs + lead_ms（先落笔、再开口）
       字幕终点 = 幕起点 + 区域结束 + tail_ms（画完还能说半拍）
-    文字区（type=text）不参与配音对齐——它写的就是标题要点，靠画面自己说话。
+
+    text_lead=True（默认）时，每幕**第一条**字幕提前到文字区开始书写之后：
+    写标题也是在动笔，没必要干等 5–6 秒静音。它讲的正是本幕主旨，与标题同义，
+    所以提前说不会和画面脱节；其余字幕仍各自跟着自己的绘制区。
+    text_lead=False 时回到"文字区完全不参与配音对齐"的老行为。
     """
     merged = {s["sceneIndex"]: s for s in timeline["scenes"]}
     out: list[dict] = []
@@ -91,19 +98,22 @@ def align_to_drawing(
         if target is None:
             raise SystemExit(f"[err] 时间线里没有第 {scene['sceneIndex']} 幕")
         annotation = json.loads(Path(annotation_path).read_text(encoding="utf-8"))
-        drawing = [
-            e for e in sorted(annotation["elements"], key=lambda e: e["reveal"]["startMs"])
-            if e.get("type") != "text"
-        ]
+        ordered = sorted(annotation["elements"], key=lambda e: e["reveal"]["startMs"])
+        drawing = [e for e in ordered if e.get("type") != "text"]
+        texts = [e for e in ordered if e.get("type") == "text"]
         first, last = scene["cueRange"]
         scene_cues = cues[first - 1:last]
         if len(drawing) != len(scene_cues):
             print(f"  [warn] 第 {scene['sceneIndex']} 幕：作画区域 {len(drawing)} 个，"
                   f"字幕 {len(scene_cues)} 条，按较少的一方对齐")
-        for cue, element in zip(scene_cues, drawing):
+        for index, (cue, element) in enumerate(zip(scene_cues, drawing)):
             reveal = element["reveal"]
             start = target["startMs"] + reveal["startMs"] + lead_ms
             end = target["startMs"] + reveal["startMs"] + reveal["durationMs"] + tail_ms
+            if index == 0 and text_lead and texts:
+                # 提到"标题开始写"之后：幕首不再有大段静音
+                text_start = target["startMs"] + texts[0]["reveal"]["startMs"] + lead_ms
+                start = min(start, text_start)
             out.append({"startMs": start, "endMs": max(end, start + 800), "text": cue["text"]})
     # 相邻条目不重叠：后一条起点不早于前一条终点
     for previous, current in zip(out, out[1:]):
@@ -124,6 +134,8 @@ def main(argv=None) -> int:
                         help="先落笔再开口的提前量（默认 250ms）")
     parser.add_argument("--tail-ms", type=int, default=250,
                         help="画完之后字幕仍可延续的时长（默认 250ms）")
+    parser.add_argument("--no-text-lead", dest="text_lead", action="store_false",
+                        help="不让每幕第一条字幕提前到标题书写期（默认允许，避免幕首静音）")
     args = parser.parse_args(argv)
 
     cues = parse_srt(Path(args.srt).read_text(encoding="utf-8-sig"))
@@ -133,9 +145,9 @@ def main(argv=None) -> int:
     if args.annotations:
         retimed = align_to_drawing(
             cues, scenes, timeline, [Path(a) for a in args.annotations],
-            args.lead_ms, args.tail_ms,
+            args.lead_ms, args.tail_ms, text_lead=args.text_lead,
         )
-        how = "按作画时序对齐"
+        how = "按作画时序对齐" + ("（幕首随标题书写开口）" if args.text_lead else "（幕首等画完标题）")
     else:
         retimed = shift_by_timeline(cues, scenes, timeline)
         how = "按合并时间线整幕平移"
