@@ -224,6 +224,45 @@ def test_cadence_rule_prefers_longer_picture_over_atempo():
 
 def test_readme_documents_the_three_changes():
     assert "标题 + 2–4 条要点" in README
-    assert "不硬切回空白画布" in README
+    assert "不闪回空白画布" in README or "不硬切回空白画布" in README
     assert "不用变速把人声催快" in README or "而不是把人声催快" in README
     assert "drawing-hand-v2.png" in README, "重画版手部素材的接管方式要写进文档"
+
+
+# ──────────────────────────────────────────────────────────────
+# 开场封面：必须是 Skill 的默认步骤，而不是事后拼片头
+# ──────────────────────────────────────────────────────────────
+def test_cover_is_a_documented_default_step():
+    assert "## 开场封面（默认必做）" in SKILL
+    section = SKILL.split("## 开场封面（默认必做）")[1].split("\n## ")[0]
+    assert "make_cover.py" in section
+    assert "--no-cover" in section, "要写清怎么跳过"
+    assert "不许有任何文字" in section or "图内同样不许" in section
+    assert "手写" in section and "不" in section  # 标题手写、不烤进出图
+    assert "4–6 秒" in section
+    params = re.search(r"## 默认实现参数(.*?)\n## ", SKILL, re.S).group(1)
+    assert "开场封面" in params
+
+
+def test_cover_wired_into_workflow_steps():
+    """第 2 步出封面分镜、第 6 步渲封面、第 7 步 --cover 接到最前。"""
+    step_two = re.search(r"\n2\. \*\*生成线稿.*?(?=\n3\. \*\*)", SKILL, re.S).group(0)
+    assert "封面" in step_two
+    step_six = re.search(r"\n6\. \*\*命令行渲染成片.*?(?=\n7\. )", SKILL, re.S).group(0)
+    assert "封面" in step_six
+    step_seven = re.search(r"\n7\. \*\*多幕合并.*?(?=\n8\. )", SKILL, re.S).group(0)
+    assert "--cover" in step_seven and "--no-cover" in step_seven
+
+
+def test_seam_rule_requires_inked_target():
+    step_seven = re.search(r"\n7\. \*\*多幕合并.*?(?=\n8\. )", SKILL, re.S).group(0)
+    assert "已经有墨" in step_seven
+    assert "seam-ink-ratio" in step_seven
+    quality = SKILL.split("## 质量检查")[1]
+    assert "已经有墨" in quality and "闪回空白" in quality
+    assert "封面" in quality
+
+
+def test_readme_documents_cover():
+    assert "make_cover.py" in README
+    assert "开场封面" in README and "--no-cover" in README

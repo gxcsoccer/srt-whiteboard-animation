@@ -3,8 +3,9 @@
 SRT 重定时：让字幕/旁白跟上合并后的真实时间线
 
 `merge_scenes.py` 会在幕与幕之间插入「停留 + 擦除」过渡，于是第 k 幕在成片里
-整体后移 k × 过渡时长。如果字幕还按原始时间轴走，旁白就会比画面早开口——
-正是「旁白已开口、画布还空着」的来源之一。
+整体后移 k × 过渡时长；有封面时整条正片还要再后移一个封面长度；另外每幕片头
+的空白纸会被裁掉（leadTrimMs）。如果字幕还按原始时间轴走，旁白就会和画面错开——
+正是「旁白已开口、画布还空着」的来源之一。本脚本按 timeline.json 把这三项都补上。
 
 本脚本按 `parse_srt.py` 的分幕结果，把每一幕的字幕整体平移到
 `merge_scenes.py --timeline-out` 记录的新起点上。
@@ -106,15 +107,24 @@ def align_to_drawing(
         if len(drawing) != len(scene_cues):
             print(f"  [warn] 第 {scene['sceneIndex']} 幕：作画区域 {len(drawing)} 个，"
                   f"字幕 {len(scene_cues)} 条，按较少的一方对齐")
+        # merge_scenes 会裁掉每幕片头的空白纸（擦除要擦到有墨的画面），
+        # 于是标注里的 startMs 在成片里整体提前了 leadTrimMs，必须减掉。
+        trim = float(target.get("leadTrimMs", 0) or 0)
         for index, (cue, element) in enumerate(zip(scene_cues, drawing)):
             reveal = element["reveal"]
-            start = target["startMs"] + reveal["startMs"] + lead_ms
-            end = target["startMs"] + reveal["startMs"] + reveal["durationMs"] + tail_ms
+            base = target["startMs"] - trim
+            start = base + reveal["startMs"] + lead_ms
+            end = base + reveal["startMs"] + reveal["durationMs"] + tail_ms
             if index == 0 and text_lead and texts:
                 # 提到"标题开始写"之后：幕首不再有大段静音
-                text_start = target["startMs"] + texts[0]["reveal"]["startMs"] + lead_ms
+                text_start = base + texts[0]["reveal"]["startMs"] + lead_ms
                 start = min(start, text_start)
-            out.append({"startMs": start, "endMs": max(end, start + 800), "text": cue["text"]})
+            start = max(target["startMs"], start)      # 不早于本幕在成片里的起点
+            out.append({
+                "startMs": int(round(start)),
+                "endMs": int(round(max(end, start + 800))),
+                "text": cue["text"],
+            })
     # 相邻条目不重叠：后一条起点不早于前一条终点
     for previous, current in zip(out, out[1:]):
         if current["startMs"] < previous["endMs"]:

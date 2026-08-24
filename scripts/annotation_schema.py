@@ -86,6 +86,40 @@ def _check_rect(
         )
 
 
+# 文字区的"够大"下限：标题通栏、换算到 1080 长边输出后高度够读
+TITLE_WIDTH_RATIO_MIN = 0.55
+TITLE_OUTPUT_HEIGHT_MIN = 130
+CAP_LONG_EDGE = 1080
+
+
+def _check_text_geometry(
+    element: dict, where: str, canvas_w: int, canvas_h: int, report: Report
+) -> None:
+    """
+    文字区太窄或太矮 → 手机上根本读不清。这里只提醒不拦：
+    宽度建议 ≥ 画布 55%（通栏更好），高度换算到输出后建议 ≥130px。
+    """
+    region = element.get("region")
+    if not isinstance(region, dict):
+        return
+    width, height = region.get("width"), region.get("height")
+    if not (_is_number(width) and _is_number(height)):
+        return
+    ratio = width / canvas_w
+    if ratio < TITLE_WIDTH_RATIO_MIN:
+        report.warnings.append(
+            f"{where}.region: 文字区只占画布宽度 {ratio * 100:.0f}%，标题会偏小；"
+            f"建议做成通栏（≥{TITLE_WIDTH_RATIO_MIN * 100:.0f}%，封面建议 90%）"
+        )
+    output_height = height * (CAP_LONG_EDGE / canvas_w)
+    if output_height < TITLE_OUTPUT_HEIGHT_MIN:
+        report.warnings.append(
+            f"{where}.region: 文字区高 {height}px，换算到 1080 输出只有 "
+            f"{output_height:.0f}px（建议 ≥{TITLE_OUTPUT_HEIGHT_MIN}px）；"
+            f"把分镜主体下移或重出图，给顶部留更多空白"
+        )
+
+
 def _check_text_block(element: dict, where: str, report: Report) -> None:
     """
     校验文字区（`type: "text"`）：标题+要点由渲染器手写出来，所以内容必须齐、且要短。
@@ -261,6 +295,8 @@ def validate_annotation(
 
         if element.get("type") == "text":
             _check_text_block(element, name, report)
+            if geometry_canvas:
+                _check_text_geometry(element, name, *geometry_canvas, report)
 
         sequence = element.get("sequence")
         if sequence is not None and not _is_number(sequence):

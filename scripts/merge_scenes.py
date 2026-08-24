@@ -206,16 +206,56 @@ def build_transition(
 
 
 def _draw_eraser(frame: "np.ndarray", edge: int, height: int) -> None:
-    """在擦除前沿画一块简易橡皮，让"擦"这个动作看得见。"""
+    """
+    在擦除前沿画一块橡皮：圆角胶皮 + 深色套圈 + 少量碎屑。
+    比一个纯灰方块更像"真的在擦"，也让观众看清擦除方向。
+    """
     if edge <= 0 or edge >= frame.shape[1]:
         return
-    half_h = max(12, height // 12)
-    top = max(0, height // 2 - half_h)
-    bottom = min(height, height // 2 + half_h)
-    left = max(0, edge - max(10, height // 26))
-    right = min(frame.shape[1], edge + max(4, height // 90))
-    cv2.rectangle(frame, (left, top), (right, bottom), (120, 120, 120), thickness=-1)
-    cv2.rectangle(frame, (left, top), (right, bottom), (60, 60, 60), thickness=2)
+    body_h = max(18, height // 7)
+    body_w = max(14, height // 11)
+    top = max(0, height // 2 - body_h // 2)
+    bottom = min(height, top + body_h)
+    right = min(frame.shape[1] - 1, edge + max(3, body_w // 5))
+    left = max(0, right - body_w)
+    if bottom - top < 6 or right - left < 6:
+        return
+
+    radius = max(3, body_w // 4)
+    body = (left, top, right, bottom)
+    # 胶皮主体（暖白）+ 顶部套圈（蓝灰）+ 描边
+    _rounded(frame, body, radius, (238, 236, 232), fill=True)
+    band_bottom = min(bottom, top + max(5, body_h // 3))
+    _rounded(frame, (left, top, right, band_bottom), radius, (176, 158, 132), fill=True)
+    _rounded(frame, body, radius, (92, 88, 84), fill=False)
+
+    # 前沿碎屑：几粒短线，越靠前越淡
+    rng_seed = (edge * 2654435761) & 0xFFFFFFFF
+    for i in range(3):
+        offset = ((rng_seed >> (i * 5)) % max(6, body_h // 2)) - body_h // 4
+        crumb_y = int(np.clip(height // 2 + offset, 0, height - 1))
+        crumb_x = min(frame.shape[1] - 1, right + 2 + i * 3)
+        cv2.line(frame, (crumb_x, crumb_y), (min(frame.shape[1] - 1, crumb_x + 3), crumb_y),
+                 (150, 146, 140), 1)
+
+
+def _rounded(frame: "np.ndarray", box: tuple[int, int, int, int], radius: int,
+             color: tuple[int, int, int], fill: bool) -> None:
+    """画圆角矩形（cv2 没有现成的圆角接口，用矩形 + 四角圆拼）。"""
+    x0, y0, x1, y1 = box
+    radius = max(1, min(radius, (x1 - x0) // 2, (y1 - y0) // 2))
+    thickness = -1 if fill else 2
+    if fill:
+        cv2.rectangle(frame, (x0 + radius, y0), (x1 - radius, y1), color, thickness)
+        cv2.rectangle(frame, (x0, y0 + radius), (x1, y1 - radius), color, thickness)
+    else:
+        cv2.line(frame, (x0 + radius, y0), (x1 - radius, y0), color, thickness)
+        cv2.line(frame, (x0 + radius, y1), (x1 - radius, y1), color, thickness)
+        cv2.line(frame, (x0, y0 + radius), (x0, y1 - radius), color, thickness)
+        cv2.line(frame, (x1, y0 + radius), (x1, y1 - radius), color, thickness)
+    for cx, cy, start in ((x0 + radius, y0 + radius, 180), (x1 - radius, y0 + radius, 270),
+                          (x1 - radius, y1 - radius, 0), (x0 + radius, y1 - radius, 90)):
+        cv2.ellipse(frame, (cx, cy), (radius, radius), 0, start, start + 90, color, thickness)
 
 
 def _duration_ms(path: Path) -> float:
@@ -238,7 +278,10 @@ def _duration_ms(path: Path) -> float:
     return (frames / rate * 1000.0) if frames and rate else 0.0
 
 
-def _write_timeline(path: Path, inputs: list[Path], transition_ms: int) -> None:
+def _write_timeline(
+    path: Path, inputs: list[Path], transition_ms: int,
+    lead_trims: list[float] | None = None, cover: Path | None = None,
+) -> None:
     """
     记录每幕在合并结果中的起始时间。插了过渡之后，第 k 幕整体后移
     k × 过渡时长——旁白要跟着重定时，否则语音会比画面早说。
@@ -246,14 +289,20 @@ def _write_timeline(path: Path, inputs: list[Path], transition_ms: int) -> None:
     """
     scenes = []
     cursor = 0.0
+    if cover is not None:                     # 封面占掉片头，正片整体后移
+        cover_ms = _duration_ms(cover)
+        cursor += cover_ms + transition_ms
     for index, video in enumerate(inputs):
         duration = _duration_ms(video)
+        trim = float((lead_trims or [0.0] * len(inputs))[index])
         scenes.append({
             "sceneIndex": index + 1,
             "input": str(video),
             "startMs": int(round(cursor)),
             "durationMs": int(round(duration)),
             "endMs": int(round(cursor + duration)),
+            # 片头被裁掉多少毫秒：标注里的 startMs 要减掉它才对得上成片
+            "leadTrimMs": int(round(trim)),
         })
         cursor += duration
         if index + 1 < len(inputs):
@@ -261,6 +310,7 @@ def _write_timeline(path: Path, inputs: list[Path], transition_ms: int) -> None:
     payload = {
         "transitionMs": transition_ms,
         "totalMs": int(round(cursor)),
+        "coverMs": int(round(_duration_ms(cover))) if cover is not None else 0,
         "scenes": scenes,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,11 +318,52 @@ def _write_timeline(path: Path, inputs: list[Path], transition_ms: int) -> None:
     print(f"  时间线已写出: {path}（过渡 {transition_ms}ms/处，总长 {payload['totalMs'] / 1000:.2f}s）")
 
 
-def _first_frame(path: Path):
+# 擦除要擦到"已经看得见内容"的一帧：纯纸面（甚至只有一支手）都会像闪回白板。
+# 阈值按暗像素占比算——实测手部覆盖约贡献 0.11%~0.16%，标题写到第一行时约 0.45%。
+SEAM_INK_RATIO = 0.0045
+SEAM_MAX_SKIP_S = 2.5
+
+
+def _ink_ratio(frame) -> float:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float((gray < 140).mean())
+
+
+def _lead_blank_seconds(
+    path: Path, min_ink_ratio: float = SEAM_INK_RATIO, cap_s: float = SEAM_MAX_SKIP_S,
+) -> tuple[object, float]:
+    """
+    返回「第一帧看得见内容的画面」以及要跳过的片头秒数。
+
+    片头那段还没落笔的空白纸（以及只有一支手悬着的几帧）在拼接处会像闪回白板，
+    所以往后找到墨量达到 min_ink_ratio 的一帧，把之前的都裁掉；
+    最多裁 cap_s 秒，免得把整段作画都跳过去。
+    """
     capture = cv2.VideoCapture(str(path))
-    ok, frame = capture.read()
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    first = None
+    content = None
+    index = 0
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        if first is None:
+            first = frame
+        if _ink_ratio(frame) >= min_ink_ratio:
+            content = frame
+            break
+        index += 1
+        if index / fps >= cap_s:
+            break
     capture.release()
-    return frame if ok else None
+    skip = (index / fps) if content is not None else 0.0
+    return (content if content is not None else first), skip
+
+
+def _first_frame(path: Path):
+    frame, _skip = _lead_blank_seconds(path)
+    return frame
 
 
 def _last_frame(path: Path):
@@ -366,6 +457,15 @@ def main(argv=None) -> int:
                    help="幕尾完整画面停留毫秒（默认 600，用户要求 ≥500）")
     p.add_argument("--erase-ms", type=int, default=700,
                    help="擦除过渡毫秒（默认 700）；设 0 关闭擦除只保留停留")
+    p.add_argument("--cover", default=None,
+                   help="开场封面 MP4：放在最前面，与第一幕之间同样 hold+erase 过渡")
+    p.add_argument("--no-cover", action="store_true",
+                   help="即使给了 --cover 也跳过封面（方便上层脚本统一命令）")
+    p.add_argument("--seam-ink-ratio", type=float, default=SEAM_INK_RATIO,
+                   help=f"擦除目标帧至少要有多少暗像素占比（默认 {SEAM_INK_RATIO}）；"
+                        "调大 = 擦到更实的画面，但会多跳过一点作画")
+    p.add_argument("--seam-max-skip-s", type=float, default=SEAM_MAX_SKIP_S,
+                   help=f"每幕片头最多裁掉多少秒（默认 {SEAM_MAX_SKIP_S}）")
     p.add_argument("--timeline-out", default=None,
                    help="把每幕在合并结果中的起始时间写成 JSON，供 SRT 重定时使用")
     args = p.parse_args(argv)
@@ -378,13 +478,53 @@ def main(argv=None) -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    # 第二幕起跳过片头空白纸，擦除目标才有墨，拼接也不会闪回白板
+    ffmpeg_bin = shutil.which("ffmpeg")
+    trimmed_dir = Path(tempfile.mkdtemp(prefix="scene_trim_"))
+    trimmed_inputs: list[Path] = []
+    lead_trims: list[float] = []
+    cover = None if (args.no_cover or not args.cover) else Path(args.cover)
+    if cover is not None and not cover.exists():
+        print(f"[err] 找不到封面: {cover}", file=sys.stderr)
+        return 1
+    for index, src in enumerate(inputs):
+        _frame, skip = _lead_blank_seconds(
+            src, min_ink_ratio=args.seam_ink_ratio, cap_s=args.seam_max_skip_s
+        )
+        # 有封面时第一幕也要去掉片头空白（它前面已经有封面，不再是全片开头）
+        first_keeps_lead = index == 0 and cover is None
+        if first_keeps_lead or skip < 0.12 or ffmpeg_bin is None:
+            trimmed_inputs.append(src)
+            lead_trims.append(0.0)
+            continue
+        dest = trimmed_dir / src.name
+        res = subprocess.run(
+            [ffmpeg_bin, "-y", "-loglevel", "error", "-ss", f"{skip:.3f}",
+             "-i", str(src), "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+             str(dest)],
+            capture_output=True, text=True,
+        )
+        if res.returncode == 0:
+            print(f"  第 {index + 1} 幕跳过片头空白 {skip:.2f}s")
+            trimmed_inputs.append(dest)
+            lead_trims.append(skip * 1000.0)
+        else:
+            print(f"  [warn] 第 {index + 1} 幕去空白失败，沿用原片")
+            trimmed_inputs.append(src)
+            lead_trims.append(0.0)
+    inputs = trimmed_inputs
+    if cover is not None:
+        print(f"  片头封面: {cover.name}（{_duration_ms(cover) / 1000:.1f}s）")
+
     # 幕与幕之间插入「停留 + 擦除」过渡，避免硬切回空白画布
-    segments = list(inputs)
+    ordered = ([cover] if cover is not None else []) + list(inputs)
+    segments = list(ordered)
     transitions: list[Path] = []
     hold_ms, erase_ms = max(0, args.hold_ms), max(0, args.erase_ms)
-    if len(inputs) > 1 and (hold_ms + erase_ms) > 0:
+    if len(ordered) > 1 and (hold_ms + erase_ms) > 0:
         temp_dir = Path(tempfile.mkdtemp(prefix="scene_transition_"))
         segments = []
+        inputs = ordered
         for index, path in enumerate(inputs):
             segments.append(path)
             if index + 1 >= len(inputs):
@@ -404,7 +544,12 @@ def main(argv=None) -> int:
         return 1
 
     if args.timeline_out:
-        _write_timeline(Path(args.timeline_out), inputs, hold_ms + erase_ms if transitions else 0)
+        scene_inputs = inputs[1:] if (cover is not None and inputs and inputs[0] == cover) else inputs
+        _write_timeline(
+            Path(args.timeline_out), scene_inputs,
+            hold_ms + erase_ms if transitions else 0,
+            lead_trims=lead_trims, cover=cover,
+        )
     print(f"OUTPUT={output.resolve()}")
     return 0
 

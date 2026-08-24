@@ -27,8 +27,9 @@
 - 每个区域采用连续流式笔迹：先 `ink` 铺线稿，再 `color` 添彩
 - 支持浏览器预览台调整区域、顺序、时间和字幕关联
 - 支持逐幕渲染与多幕合并，输出完整 MP4
+- 默认带开场封面：Codex 出封面分镜，中文主标/副标由渲染器手写，片头 4–6 秒后擦入第一幕
 - 每幕自动手写「标题 + 2–4 条要点」（渲染器排版书写，不把中文烤进出图）
-- 幕间自带过渡：上一幕完整画面停留后擦除，不硬切回空白画布
+- 幕间自带过渡：上一幕完整画面停留后擦除，擦到下一幕已有墨的画面，不闪回空白画布
 - 用 edge-tts（云希，免费无需 key）按字幕逐条合成中文旁白并混进成片，不烧录字幕
 - 旁白卡点跟画面走：语音超窗默认扩窗顺延，不用变速把人声催快
 
@@ -36,7 +37,7 @@
 
 该 Skill 的关键在于“字幕驱动、逐步确认”。每一步完成后都等待确认，避免在分镜、线稿或标注尚未定稿时浪费渲染成本：
 
-1. 解析 SRT，输出分镜与配图策略。
+1. 解析 SRT，输出分镜与配图策略（含封面主标/副标）。
 2. 确认后生成统一风格的线稿。
 3. 确认线稿后，结合字幕和原图创建标注，并载入预览台。
 4. 确认标注后，生成分区与方向检查图。
@@ -160,11 +161,18 @@ python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 
 
 成片长度由各区域的 `startMs + durationMs` 累加决定：`--total-ms`（缺省取 `sceneDurationMs`）只用于在画完之后补足凝视时长，**只能延长、不能缩短**。要缩短成片，请改区域时序。`--pause` 在逐区域画法下不生效（保留参数，仅整图模式 `stream_render.py` 使用）。
 
-合并多幕（默认插入幕间过渡：停留 600ms + 擦除 700ms，并导出时间线）：
+生成开场封面标注（主标/副标由渲染器手写，不烤进出图；`--no-cover` 跳过）：
 
 ```bash
-<ENV_PY> scripts/merge_scenes.py --inputs 幕1.mp4 幕2.mp4 幕3.mp4 --output final.mp4 \
-  --timeline-out timeline.json [--hold-ms 600] [--erase-ms 700]
+python scripts/make_cover.py --board 封面.png --title "动态组合" \
+  --subtitle "把可撤销效应和响应式协效应做成运行时" --output 封面.annotation.json
+```
+
+合并（封面接在最前；幕间停留 600ms + 擦除 700ms，擦到下一幕已有墨的一帧）：
+
+```bash
+<ENV_PY> scripts/merge_scenes.py --inputs 幕1.mp4 幕2.mp4 幕3.mp4 --cover 封面.mp4 \
+  --output final.mp4 --timeline-out timeline.json [--hold-ms 600] [--erase-ms 700]
 ```
 
 按成片时间线重定时字幕（插过渡后必须做，否则旁白比画面早开口；每幕第一条会随标题书写开口，
@@ -196,6 +204,7 @@ python scripts/retime_srt.py --srt 原始.srt --scenes scenes.json --timeline ti
 - 中段帧中，未开始区域和保护区不会提前出现
 - 笔尖贴近当前流式笔迹；线稿清晰、且没有大面积实心黑时才可选择 `--ink-path skeleton`
 - 每幕结束后至少停留 0.5 秒完整画面；多幕合并顺序与字幕分镜一致
+- 片头封面：手写主标/副标通栏够大，停留约 1 秒后擦入第一幕
 - 每幕有手写标题 + 2–4 条要点，未写出区域、与隐喻不重叠
 - 幕间接缝：上一幕完整画面停留 ≥0.5s 后擦除过渡，没有硬切回空白
 - 带旁白的成片有 aac 音轨、旁白开口时对应那一笔已在画、未被加速、画面未烧录字幕
@@ -217,6 +226,7 @@ srt-whiteboard-animation/
 │   ├── render_stream_whiteboard.py   # 编排层：分区遮罩 + 时序，输出单幕 MP4
 │   ├── stream_render.py              # 画法层引擎：骨架/网格笔迹、上色、转码
 │   ├── merge_scenes.py               # 多幕合并 + 幕间停留/擦除过渡
+│   ├── make_cover.py                 # 开场封面标注（手写主标/副标）
 │   ├── retime_srt.py                 # 按成片时间线/作画时序重定时字幕
 │   ├── text_render.py                # 标题+要点的手写排版与笔序
 │   ├── fonts.py                      # 中文/楷体字体定位

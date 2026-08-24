@@ -34,8 +34,10 @@ PAPER = 255
 class TextBlockSpec:
     """一个文字区的内容与排版参数（对应标注里的 element.text）。"""
     title: str = ""
+    subtitle: str = ""              # 副标：紧跟主标，不带要点短横（封面用）
     bullets: list[str] = field(default_factory=list)
     title_scale: float = 1.0        # 标题字号相对自动值的倍数
+    subtitle_scale: float = 0.62    # 副标字号 = 主标 × 该倍数
     bullet_scale: float = 1.0       # 要点字号相对自动值的倍数
     line_spacing: float = 0.55      # 行距（相对要点字号）
     underline: bool = True          # 标题下方画抖动下划线
@@ -53,8 +55,10 @@ class TextBlockSpec:
             bullets = [bullets]
         return cls(
             title=str(raw.get("title", "")),
+            subtitle=str(raw.get("subtitle", "")),
             bullets=[str(b) for b in bullets],
             title_scale=float(raw.get("titleScale", 1.0)),
+            subtitle_scale=float(raw.get("subtitleScale", 0.62)),
             bullet_scale=float(raw.get("bulletScale", 1.0)),
             line_spacing=float(raw.get("lineSpacing", 0.55)),
             underline=bool(raw.get("underline", True)),
@@ -63,7 +67,18 @@ class TextBlockSpec:
 
     @property
     def lines(self) -> list[str]:
-        return ([self.title] if self.title else []) + list(self.bullets)
+        return [text for _kind, text in self.rows]
+
+    @property
+    def rows(self) -> list[tuple[str, str]]:
+        """按书写顺序给出 (类型, 文本)：title / subtitle / bullet。"""
+        out: list[tuple[str, str]] = []
+        if self.title:
+            out.append(("title", self.title))
+        if self.subtitle:
+            out.append(("subtitle", self.subtitle))
+        out.extend(("bullet", b) for b in self.bullets if b)
+        return out
 
 
 def _load_font(path: str | None, size: int):
@@ -83,18 +98,27 @@ def _auto_sizes(spec: TextBlockSpec, width: int, height: int) -> tuple[int, int]
     按区域大小和内容量推字号：先按行数分配高度，再确认最长行不会超宽。
     标题比要点大 1.45 倍。
     """
-    line_count = max(1, len(spec.lines))
-    bullet_lines = max(1, len(spec.bullets))
-    # 高度预算：标题占 1.45 份 + 要点各 1 份 + 行距
-    weight = (1.45 if spec.title else 0) + bullet_lines
+    rows = spec.rows
+    line_count = max(1, len(rows))
+    bullet_lines = max(1, len(spec.bullets)) if spec.bullets else 0
+    # 高度预算：主标 1.45 份 + 副标 1.45×subtitle_scale 份 + 要点各 1 份 + 行距
+    weight = (1.45 if spec.title else 0)
+    weight += (1.45 * spec.subtitle_scale) if spec.subtitle else 0
+    weight += bullet_lines
     gaps = (line_count - 1) * spec.line_spacing
     bullet_size = int(height / max(1e-6, weight + gaps))
 
     # 宽度约束：中文按“每字约等于字号”估算，要点还要留出行首短横
     longest_title = len(spec.title) if spec.title else 0
+    longest_subtitle = len(spec.subtitle) if spec.subtitle else 0
     longest_bullet = max((len(b) for b in spec.bullets), default=0)
     if longest_title:
         bullet_size = min(bullet_size, int(width / (longest_title * 1.45 * 1.02)))
+    if longest_subtitle:
+        bullet_size = min(
+            bullet_size,
+            int(width / max(1.0, longest_subtitle * 1.45 * spec.subtitle_scale * 1.02)),
+        )
     if longest_bullet:
         bullet_size = min(bullet_size, int((width - int(height * 0.06)) / (longest_bullet * 1.04)))
 
@@ -216,17 +240,27 @@ def _layout(
     canvas = np.full((height, width), PAPER, dtype=np.uint8)
     draw_image = Image.fromarray(canvas)
     strokes: list[list[tuple[int, int]]] = []
+    subtitle_size = max(12, int(title_size * spec.subtitle_scale))
     title_font = _load_font(resolved, title_size)
+    subtitle_font = _load_font(resolved, subtitle_size)
     bullet_font = _load_font(resolved, bullet_size)
     dash_width = max(6, int(bullet_size * 0.44))
     dash_gap = max(4, int(bullet_size * 0.26))
     cursor_y = 0
 
-    for index, line in enumerate(spec.lines):
-        is_title = bool(spec.title) and index == 0
-        size = title_size if is_title else bullet_size
-        font = title_font if is_title else bullet_font
-        indent = 0 if is_title else dash_width + dash_gap
+    for kind, line in spec.rows:
+        is_title = kind == "title"
+        is_subtitle = kind == "subtitle"
+        if is_title:
+            size, font = title_size, title_font
+        elif is_subtitle:
+            size, font = subtitle_size, subtitle_font
+        else:
+            size, font = bullet_size, bullet_font
+        # 副标不带短横，但缩进一点，读起来附属于主标
+        indent = 0 if is_title else (
+            max(4, int(subtitle_size * 0.2)) if is_subtitle else dash_width + dash_gap
+        )
         tile, tile_strokes = _render_line(
             line, font, size, rng, spec.jitter, max(8, width - indent), step
         )
@@ -235,8 +269,8 @@ def _layout(
         if cursor_y + tile_h > height:         # 放不下：交给外层缩字号重排
             return canvas, strokes, cursor_y + tile_h
 
-        # 要点前的手画短横，纵向对齐到这一行的中线
-        if not is_title:
+        # 要点前的手画短横，纵向对齐到这一行的中线（副标不画短横）
+        if not is_title and not is_subtitle:
             marker = Image.fromarray(canvas)
             pen = ImageDraw.Draw(marker)
             strokes.append(
@@ -266,7 +300,9 @@ def _layout(
                 )
                 canvas = np.array(marker)
                 cursor_y = underline_y + max(2, int(size * 0.1))
-        cursor_y += int(bullet_size * spec.line_spacing)
+        cursor_y += int(
+            (subtitle_size if is_subtitle else bullet_size) * spec.line_spacing
+        )
 
     draw_image.close()
     return canvas, strokes, cursor_y

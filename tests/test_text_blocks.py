@@ -107,7 +107,7 @@ def _annotation(text_value, **overrides) -> dict:
     element = {
         "id": "title", "label": "标题", "sequence": 1, "type": "text",
         "text": text_value,
-        "region": {"x": 10, "y": 10, "width": 400, "height": 150},
+        "region": {"x": 30, "y": 20, "width": 900, "height": 170},
         "reveal": {"startMs": 200, "durationMs": 4000, "protectedRegions": []},
     }
     element.update(overrides)
@@ -150,6 +150,30 @@ def test_long_title_and_many_bullets_only_warn():
     assert report.ok, report.errors
     assert any("标题" in w and "偏长" in w for w in report.warnings)
     assert any("偏多" in w for w in report.warnings)
+
+
+def test_narrow_text_region_warns_about_title_size():
+    """文字区不通栏 → 标题偏小，手机上读不清，必须提醒。"""
+    annotation = _annotation({"title": "标题", "bullets": ["要点"]})
+    annotation["elements"][0]["region"] = {"x": 10, "y": 10, "width": 400, "height": 170}
+    report = validate_annotation(annotation)
+    assert report.ok, report.errors
+    assert any("通栏" in w for w in report.warnings)
+
+
+def test_short_text_region_warns_about_output_height():
+    annotation = _annotation({"title": "标题", "bullets": ["要点"]})
+    annotation["elements"][0]["region"] = {"x": 30, "y": 20, "width": 900, "height": 90}
+    report = validate_annotation(annotation)
+    assert report.ok, report.errors
+    assert any("1080 输出" in w for w in report.warnings)
+
+
+def test_full_width_tall_text_region_has_no_geometry_warning():
+    annotation = _annotation({"title": "标题", "bullets": ["要点"]})
+    annotation["elements"][0]["region"] = {"x": 30, "y": 20, "width": 940, "height": 200}
+    report = validate_annotation(annotation)
+    assert report.ok and not [w for w in report.warnings if "文字区" in w]
 
 
 def test_text_region_overlapping_later_region_warns():
