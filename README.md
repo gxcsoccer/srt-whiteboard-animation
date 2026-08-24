@@ -27,6 +27,7 @@
 - 每个区域采用连续流式笔迹：先 `ink` 铺线稿，再 `color` 添彩
 - 支持浏览器预览台调整区域、顺序、时间和字幕关联
 - 支持逐幕渲染与多幕合并，输出完整 MP4
+- 用 edge-tts（云希，免费无需 key）按字幕逐条合成中文旁白并混进成片，不烧录字幕
 
 ## 工作方式
 
@@ -39,6 +40,7 @@
 5. 在预览台调整区域、叙事顺序、时序和字幕关联并保存。
 6. 确认最终标注后，逐幕渲染 MP4。
 7. 多幕项目在确认各幕成片后合并。
+8. 确认最终视频后，用最初那份 SRT 配旁白并混音。
 
 ## 视觉规范（小黑风格包）
 
@@ -155,6 +157,18 @@ python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 
 <ENV_PY> scripts/merge_scenes.py --inputs 幕1.mp4 幕2.mp4 幕3.mp4 --output final.mp4
 ```
 
+配旁白并混音（edge-tts，免费、无需 key，需联网）：
+
+```bash
+<ENV_PY> scripts/mux_srt_narration.py --srt <字幕.srt> --video final.mp4 \
+  --output final-narrated.mp4 [--voice zh-CN-YunxiNeural] [--rate +0%] [--keep-wav]
+```
+
+每条字幕单独合成、按自己的起点对齐；语音超出窗口时用 `atempo` 加速塞进窗口，**不会压到下一条**
+（窗口右界取下一条字幕的起点）。视频流是 `-c:v copy`，画面零改动、**不烧录字幕**，字幕仍作为外部
+`.srt` 交付。`--output` 不能与 `--video` 相同。日志逐条打印窗口/语音时长/加速倍数，
+加速超过 1.35× 会提示该条字幕写得太满——这时优先精简文案。
+
 ## 质量检查
 
 - 首帧是干净的暖米黄纸张底色，没有提前露出的线条
@@ -164,6 +178,7 @@ python scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 
 - 中段帧中，未开始区域和保护区不会提前出现
 - 笔尖贴近当前流式笔迹；线稿清晰、且没有大面积实心黑时才可选择 `--ink-path skeleton`
 - 每幕结束后至少停留 0.5 秒完整画面；多幕合并顺序与字幕分镜一致
+- 带旁白的成片有 aac 音轨、总时长与静音母版一致、旁白不越到下一条字幕、画面未烧录字幕
 
 ## 仓库内容
 
@@ -182,6 +197,7 @@ srt-whiteboard-animation/
 │   ├── render_stream_whiteboard.py   # 编排层：分区遮罩 + 时序，输出单幕 MP4
 │   ├── stream_render.py              # 画法层引擎：骨架/网格笔迹、上色、转码
 │   ├── merge_scenes.py               # 多幕合并
+│   ├── mux_srt_narration.py          # edge-tts 旁白合成与混音
 │   └── prepare_env.py                # 依赖环境准备
 ├── styles/ian-xiaohei/               # 小黑风格包（vendored，MIT，作者 Ian）
 │   ├── README.md                     # 风格包说明与覆盖规则

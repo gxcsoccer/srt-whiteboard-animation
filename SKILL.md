@@ -1,6 +1,6 @@
 ---
 name: srt-whiteboard-animation
-description: 将 SRT 字幕做成暖米黄纸张底的白板手绘动画：读字幕→输出配图策略→确认后按「小黑」IP 生成线稿→按叙事语义标注分区→预览台调整→渲染 MP4。线稿默认使用 styles/ian-xiaohei 风格包（小黑 IP、暖黄纸、黑线、无图内文字）。编排沿用分区遮罩揭示（annotation.json / sequence / startMs / protectedRegions），但每个区域内的落墨换成 stream 的连续笔迹（骨架/网格 ink→color）。当用户提供 SRT 字幕并要求"字幕做成白板手绘/流式笔迹视频""SRT 生成白板动画""按字幕分镜画手绘"时触发。
+description: 将 SRT 字幕做成暖米黄纸张底的白板手绘动画：读字幕→输出配图策略→确认后按「小黑」IP 生成线稿→按叙事语义标注分区→预览台调整→渲染 MP4→edge-tts 配旁白混音。线稿默认使用 styles/ian-xiaohei 风格包（小黑 IP、暖黄纸、黑线、无图内文字）。编排沿用分区遮罩揭示（annotation.json / sequence / startMs / protectedRegions），但每个区域内的落墨换成 stream 的连续笔迹（骨架/网格 ink→color）。当用户提供 SRT 字幕并要求"字幕做成白板手绘/流式笔迹视频""SRT 生成白板动画""按字幕分镜画手绘"时触发。
 ---
 
 # SRT 白板动画（mask 编排 + stream 画法）
@@ -22,6 +22,7 @@ description: 将 SRT 字幕做成暖米黄纸张底的白板手绘动画：读�
 | 时长来源 | 每张图的 `sceneDurationMs` 来自该幕字幕的时间跨度（建议 25–35 秒/幕）。 |
 | 实心墨块 | 小黑的实心黑身体建议加 `--solid-ink-gray 90`，让起笔段就填实而不是只勾轮廓；含大面积实心黑时**不要**用 `--ink-path skeleton`。 |
 | 编辑框 | 预览台默认显示全部编号编辑框；编辑框不属于动画画面内容。 |
+| 旁白 | 成片确认后用 `mux_srt_narration.py` + edge-tts（默认云希 `zh-CN-YunxiNeural`）按字幕逐条对齐混音；视频流 `-c:v copy`，不烧录字幕。 |
 
 ## 统一出图视觉规范（强制）
 
@@ -54,6 +55,7 @@ description: 将 SRT 字幕做成暖米黄纸张底的白板手绘动画：读�
 5. **在预览台调整并保存。** 仅在用户确认预览图后，在已打开且已载入对应目录的预览台调整：默认（未播放）显示完整图片和区域框；画布是**矩形代理**：拖区域四边四角改 `region`，右侧改名称/方向/**开始(ms)/结束(ms)**（时长= 结束−开始，只读）与**字幕**，拖动模块列表**调整顺序**（自动重排 `sequence`；因为成片顺序只看 `startMs`，拖完必须同步改开始/结束时间才会生效），选中模块自动高亮对应字幕；拖时间轴或按播放看揭示（未开始区域不显示）；`direction` 只影响此代理。改完点“保存本场景/全部保存”写回原 `.annotation.json`（含每区域 `subtitle`；每个待保存场景的 `sceneDurationMs` 都会对齐到该场景最后区域结束+0.5s，可增可减）。**保存后停止，等待用户确认最终标注与时序。**
 6. **命令行渲染成片。** 仅在用户确认最终标注与时序后，用 `render_stream_whiteboard.py` 逐幕出全清 MP4，抽查开场、任意重叠模块中段、结尾三个时间点。**完成后停止，等待用户确认成片。**
 7. **多幕合并（仅适用于多幕）。** 仅在用户确认所有单幕成片后，用 `merge_scenes.py` 按顺序合并成一条。**完成后停止，等待用户确认最终合成视频。**
+8. **配旁白（edge-tts 混音）。** 仅在用户确认最终合成视频（单幕项目则是确认该幕成片）后，用 `mux_srt_narration.py` 拿**最初那份 SRT** 合成中文旁白并混进成片：每条字幕单独合成，按自己的 `startMs` 对齐，语音超出窗口就 `atempo` 加速塞进去（窗口右界取下一条字幕的起点，**绝不允许压到下一条**），铺成与视频等长的音轨后 mux。视频流是 `-c:v copy`，画面零改动，**不烧录字幕**（字幕仍作为外部 .srt 交付）。输出必须是新文件名，不要覆盖已确认的静音成片。**完成后停止，等待用户确认带旁白的成片。**
 
 ## 目录约定
 
@@ -154,6 +156,17 @@ assets/whiteboard/<项目名>/
    ```bash
    <ENV_PY> scripts/merge_scenes.py --inputs 幕1.mp4 幕2.mp4 幕3.mp4 --output final.mp4
    ```
+7. **配旁白并混音**（edge-tts，免费、无需 key，需联网）：
+   ```bash
+   <ENV_PY> scripts/mux_srt_narration.py --srt <字幕.srt> --video final.mp4 \
+       --output final-narrated.mp4 [--voice zh-CN-YunxiNeural] [--rate +0%] \
+       [--gap-ms 120] [--keep-wav]
+   ```
+   默认音色是云希 `zh-CN-YunxiNeural`；换音色可先 `python -m edge_tts --list-voices | grep zh-CN`。
+   输出末行是 `OUTPUT=<路径>`；缺 edge-tts、缺系统 ffmpeg 或无法联网时以非零码退出并说明原因。
+   `--output` 不能等于 `--video`（脚本会拒绝覆盖已确认的静音成片）。
+   日志会逐条打印「窗口 / 语音时长 / 加速倍数」，加速超过 1.35× 会提示该条字幕写得太满——
+   这种情况优先回去精简字幕文本，而不是一味加速。
 
 ## 质量检查
 
@@ -169,5 +182,8 @@ assets/whiteboard/<项目名>/
 - 笔尖贴近正在推进的笔迹；线稿清晰的插画可用 `--ink-path skeleton` 让笔迹更贴合。
 - 所有模块结束后停留至少 0.5 秒完整原图。
 - 多幕合并后顺序、时长与字幕分镜一致。
+- 带旁白的成片确实有音频轨（`ffprobe -select_streams a` 能看到 aac），且总时长与静音母版一致。
+- 旁白逐条对齐字幕起点：抽查任意两条相邻字幕，前一条的语音不会压到后一条的起点。
+- 画面里**没有烧录字幕**：视频流应与静音母版逐帧一致（编码、尺寸、帧数都不变），字幕单独作为 .srt 交付。
 
 如需修改效果，先在预览台（`assets/preview.html`）调整标注（区域/顺序/时序）并保存，再命令行渲染，不要凭空反复出片。
