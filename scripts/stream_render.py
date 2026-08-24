@@ -652,10 +652,59 @@ def flatten_streams(streams: list[list[tuple[int, int]]]) -> list[tuple[int, int
 # ──────────────────────────────────────────────────────────────
 # 笔尖 / 手部覆盖
 # ──────────────────────────────────────────────────────────────
+def _mask_from_flat_background(bgr: np.ndarray, tolerance: int = 42) -> np.ndarray:
+    """
+    没有 alpha 通道时，从四角推出纯色背景并抠图。
+
+    重画版手部素材是**黑底**（不是白底、也不是透明），若仍按"近白即背景"处理，
+    整块黑底会被当成前景、在画面上盖出一个大黑方块。这里改成：
+      1. 取四角样本，若彼此接近则认定它就是背景色
+      2. 与背景色差异超过 tolerance 的像素才算手/笔
+      3. 取最大连通域，去掉零散噪点；四角颜色不一致时退回"近白即背景"
+    """
+    height, width = bgr.shape[:2]
+    patch = max(4, min(height, width) // 60)
+    corners = np.stack([
+        bgr[:patch, :patch].reshape(-1, 3).mean(axis=0),
+        bgr[:patch, -patch:].reshape(-1, 3).mean(axis=0),
+        bgr[-patch:, :patch].reshape(-1, 3).mean(axis=0),
+        bgr[-patch:, -patch:].reshape(-1, 3).mean(axis=0),
+    ])
+    spread = float(np.abs(corners - corners.mean(axis=0)).max())
+    if spread > 26:                     # 四角颜色不统一：不像纯色底，退回旧逻辑
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+        return mask
+
+    background = corners.mean(axis=0)
+    distance = np.abs(bgr.astype(np.int16) - background.astype(np.int16)).sum(axis=2)
+    mask = (distance > tolerance).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    )
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if count > 1:                       # 只保留最大的一块（手+笔），丢掉零散噪点
+        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        mask = np.where(labels == largest, 255, 0).astype(np.uint8)
+
+    # 填内部空洞：笔杆描边、指节褶皱这些近黑线条会被误判成背景，
+    # 留在手里就是"透出画布"的孔。只有与画面边缘连通的才是真背景。
+    inverse = (mask == 0).astype(np.uint8)
+    holes, hole_labels = cv2.connectedComponents(inverse, connectivity=4)
+    if holes > 1:
+        border = set(hole_labels[0, :]) | set(hole_labels[-1, :])
+        border |= set(hole_labels[:, 0]) | set(hole_labels[:, -1])
+        border.discard(0)
+        interior = np.isin(hole_labels, list(border), invert=True) & (inverse > 0)
+        mask[interior] = 255
+    return mask
+
+
 def _load_hand(path: Path, target_h: int) -> tuple[np.ndarray, np.ndarray] | None:
     """
     读入手部素材并按目标高度等比缩放。
-    优先用 alpha 通道做蒙版；无 alpha 时回退到“近白即背景”检测。
+    优先用 alpha 通道做蒙版；没有 alpha 时按四角取样推背景色
+    （白底、黑底、纯色底都能处理），再退回“近白即背景”。
     返回 (手部BGR, 归一化蒙版[0..1])，失败返回 None。
     """
     if not path.exists():
@@ -668,9 +717,8 @@ def _load_hand(path: Path, target_h: int) -> tuple[np.ndarray, np.ndarray] | Non
         hand = raw[:, :, :3]
         mask = raw[:, :, 3]
     else:
-        hand = raw
-        gray = cv2.cvtColor(hand, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+        hand = raw if raw.ndim == 3 else cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+        mask = _mask_from_flat_background(hand)
 
     # 裁到有效区
     (x0, y0), (x1, y1) = _bounding_box(mask)

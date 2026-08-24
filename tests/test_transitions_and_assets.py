@@ -281,3 +281,73 @@ def test_v2_candidate_paths_include_the_agreed_dropbox():
     paths = [str(p) for p in sr.HAND_V2_CANDIDATES]
     assert any(p.endswith("assets/drawing-hand-v2.png") for p in paths)
     assert any("/workspace/e2e-paper/assets/drawing-hand-v2.png" == p for p in paths)
+
+
+# ──────────────────────────────────────────────────────────────
+# 无 alpha 手部素材的抠图（重画版 v2 是黑底 RGB）
+# ──────────────────────────────────────────────────────────────
+def _hand_on_background(background: tuple[int, int, int], hole: bool = False) -> np.ndarray:
+    """造一张"手"：纯色底 + 一块肤色多边形；hole=True 时在内部画一条近黑细线。"""
+    image = np.full((200, 120, 3), background, np.uint8)
+    # 用不规则多边形而不是矩形：裁到包围盒后仍应留出背景，才像真实素材
+    polygon = np.array([[30, 20], [90, 45], [80, 170], [50, 150], [35, 90]], np.int32)
+    cv2.fillPoly(image, [polygon], (150, 190, 230))
+    if hole:
+        cv2.line(image, (55, 60), (60, 140), (2, 2, 2), 3)      # 笔杆描边那种近黑线
+    return image
+
+
+def test_mask_from_black_background():
+    """黑底素材若按"近白即背景"处理，整块黑底会被当成前景、盖出黑方块。"""
+    image = _hand_on_background((0, 0, 0))
+    mask = sr._mask_from_flat_background(image)
+    assert mask[100, 60] == 255, "手的位置应是前景"
+    assert mask[5, 5] == 0 and mask[195, 115] == 0, "黑底必须被判为背景"
+    coverage = (mask > 0).mean()
+    assert 0.15 < coverage < 0.6, f"覆盖率异常: {coverage:.2f}"
+
+
+def test_mask_from_white_background_still_works():
+    image = _hand_on_background((255, 255, 255))
+    mask = sr._mask_from_flat_background(image)
+    assert mask[100, 60] == 255
+    assert mask[5, 5] == 0
+
+
+def test_mask_fills_interior_holes():
+    """笔杆描边、指节褶皱是近黑细线，留着就会透出画布。"""
+    image = _hand_on_background((0, 0, 0), hole=True)
+    mask = sr._mask_from_flat_background(image)
+    assert mask[100, 57] == 255, "手内部的近黑线不应留成孔"
+
+
+def test_mask_falls_back_when_corners_disagree():
+    """四角颜色不一致（不像纯色底）时退回旧的近白判定，不乱抠。"""
+    image = _hand_on_background((0, 0, 0))
+    image[:20, :20] = (255, 255, 255)          # 一个角故意不同
+    mask = sr._mask_from_flat_background(image)
+    assert mask.shape == image.shape[:2]
+    assert mask[100, 60] == 255
+
+
+def test_load_hand_handles_rgb_black_background(tmp_path):
+    path = tmp_path / "hand-v2.png"
+    cv2.imwrite(str(path), _hand_on_background((0, 0, 0), hole=True))
+    loaded = sr._load_hand(path, 200)
+    assert loaded is not None
+    hand, mask = loaded
+    assert hand.shape[0] == 200 and mask.shape == hand.shape[:2]
+    assert 0.2 < float((mask > 0.5).mean()) < 0.85, "蒙版既不能全空也不能全满"
+
+
+@pytest.mark.skipif(
+    not (Path("/workspace/e2e-paper/assets/drawing-hand-v2.png").exists()),
+    reason="重画版手部素材尚未提供",
+)
+def test_real_v2_asset_masks_sanely():
+    loaded = sr._load_hand(Path("/workspace/e2e-paper/assets/drawing-hand-v2.png"), 493)
+    assert loaded is not None
+    hand, mask = loaded
+    coverage = float((mask > 0.5).mean())
+    assert 0.2 < coverage < 0.7, f"v2 素材蒙版覆盖率 {coverage:.2f} 不合理（黑底没抠掉？）"
+    assert hand.shape[0] == 493
