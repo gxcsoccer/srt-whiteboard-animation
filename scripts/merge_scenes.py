@@ -115,7 +115,10 @@ def _concat_filter(
     known = [s for s in specs if s]
     if not known:
         return False
-    width, height = known[0][0] // 2 * 2, known[0][1] // 2 * 2
+    # 第一片可探测时必须以它为画幅基准；只有第一片探测失败时，
+    # 才退回首个可探测片段，让 filter 路径仍有机会完成拼接。
+    base = specs[0] if specs and specs[0] is not None else known[0]
+    width, height = base[0] // 2 * 2, base[1] // 2 * 2
     fps = max((_fps_value(s[2]) for s in known), default=0.0)
     fps_arg = f"{fps:.6f}".rstrip("0").rstrip(".") if fps > 0 else "30"
     print(f"  [..] 归一化到 {width}x{height} @ {fps_arg}fps 后拼接")

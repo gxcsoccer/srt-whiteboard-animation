@@ -155,6 +155,46 @@ def test_fps_value_parses_fractions():
     assert merge_scenes._fps_value("garbage") == 0.0
 
 
+def test_concat_filter_uses_first_segment_as_canvas(monkeypatch, tmp_path):
+    """归一化拼接必须以第一片为画幅基准，而不是首个其它已知片段。"""
+    import merge_scenes
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        merge_scenes.subprocess,
+        "run",
+        lambda cmd, **_: (captured.append(cmd), subprocess.CompletedProcess(cmd, 0, "", ""))[1],
+    )
+    specs = [(481, 271, "12/1"), (720, 400, "24/1")]
+
+    assert merge_scenes._concat_filter(
+        "/usr/bin/ffmpeg", [Path("first.mp4"), Path("second.mp4")],
+        tmp_path / "out.mp4", specs,
+    ) is True
+    filter_complex = captured[0][captured[0].index("-filter_complex") + 1]
+    assert "scale=480:270" in filter_complex
+
+
+def test_concat_filter_falls_back_when_first_probe_fails(monkeypatch, tmp_path):
+    """第一片探测失败时仍可用后续片段的规格完成归一化拼接。"""
+    import merge_scenes
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        merge_scenes.subprocess,
+        "run",
+        lambda cmd, **_: (captured.append(cmd), subprocess.CompletedProcess(cmd, 0, "", ""))[1],
+    )
+    specs = [None, (721, 401, "24/1")]
+
+    assert merge_scenes._concat_filter(
+        "/usr/bin/ffmpeg", [Path("unknown.mp4"), Path("known.mp4")],
+        tmp_path / "out.mp4", specs,
+    ) is True
+    filter_complex = captured[0][captured[0].index("-filter_complex") + 1]
+    assert "scale=720:400" in filter_complex
+
+
 # ──────────────────────────────────────────────────────────────
 # 预览台：Node 侧逻辑测试的转接（没装 node 就跳过）
 # ──────────────────────────────────────────────────────────────
